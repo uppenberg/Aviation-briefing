@@ -229,7 +229,6 @@
 
     // Hjälpfunktion för API-anrop till Apps Script backend
 function callBackend(action, payload, successCallback, failureCallback) {
-  // Bygg query-parametrar för GET-anrop
   var queryParams = "?action=" + encodeURIComponent(action);
   if (payload) {
     for (var key in payload) {
