@@ -1,1 +1,53 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Aviation Weather & NOTAM Viewer (Offline / LocalStorage)</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
 
+  <!-- FLIKVÄLJARE & SKAPA/RADERA FLIK -->
+  <div class="panel">
+    <div class="panel-title">Välj, skapa eller radera flik</div>
+    <div class="flex-row">
+      <label>Aktiv Flik: 
+        <select id="sheetSelector" onchange="handleSheetChange()">
+          <!-- Fylls i dynamiskt -->
+        </select>
+      </label>
+      <input type="text" id="newSheetName" placeholder="Ny Fliknamn..." style="width: 110px;">
+      <button onclick="handleCreateSheet()">+ Skapa</button>
+      <button class="danger" onclick="handleDeleteSheet()" title="Ta bort aktiv flik">🗑️ Ta bort</button>
+    </div>
+  </div>
+
+  <!-- FLYGTIDER & KONTROLLER -->
+  <div class="panel">
+    <div class="panel-title">Flight Planning & Controls</div>
+    <div class="flex-row">
+      <label>DEP: <input type="text" id="depTime" class="time-input" placeholder="NOW"></label>
+      <label>ARR: <input type="text" id="arrTime" class="time-input" placeholder="NOW"></label>
+      <button onclick="handleSaveTimes()">Spara tider</button>
+      <button class="secondary" onclick="handleUpdateWeather()">🔄 METAR/TAF</button>
+      <button class="secondary" onclick="handleUpdateNotams()">📋 NOTAM</button>
+    </div>
+  </div>
+
+  <!-- LÄGG TILL ICAO -->
+  <div class="panel">
+    <div class="panel-title">Ny Flygplats</div>
+    <div class="flex-row">
+      <input type="text" id="newIcao" class="icao-input" placeholder="ESNU" maxlength="4">
+      <button onclick="handleAddIcao()">+ Lägg till ICAO</button>
+    </div>
+  </div>
+
+  <div id="status"></div>
+  <div id="content" class="loading">Laddar data...</div>
+
+  <script src="app.js"></script>
+</body>
+</html>
