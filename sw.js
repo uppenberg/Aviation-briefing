@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aviation-pwa-v4';
+const CACHE_NAME = 'aviation-pwa-v5';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -30,7 +30,7 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Låt alla anrop till Apps Script gå direkt till nätverket utan att SW lägger sig i
+  // Låt alla anrop till Apps Script gå direkt till nätverket
   if (event.request.url.includes('script.google.com')) {
     return;
   }
