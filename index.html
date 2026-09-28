@@ -212,9 +212,7 @@
   <script>
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyxONYxCTlL4VQXCZ5udE6slFl9ASSeP4AYK1zBgljRv7QdAYkPxJcswkIUtAMWbX6P/exec";
     var currentActiveSheet = "";
-    var allSheetsData = null; // Håller hela kalkylbladets flikar i minnet
 
-    // Registrera Service Worker för PWA
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('./sw.js')
@@ -227,7 +225,6 @@
       loadData();
     };
 
-    // GET-baserad kommunikation
     function callBackend(action, payload, successCallback, failureCallback) {
       var queryParams = "?action=" + encodeURIComponent(action);
       if (payload) {
@@ -264,51 +261,52 @@
     }
 
     function loadData(targetSheet) {
+      if (!targetSheet && !currentActiveSheet) {
+        var lastCacheRaw = localStorage.getItem('aviation_last_cache');
+        if (lastCacheRaw) {
+          try {
+            var parsedLast = JSON.parse(lastCacheRaw);
+            if (parsedLast && parsedLast.sheetName) {
+              currentActiveSheet = parsedLast.sheetName;
+            }
+          } catch(e) {}
+        }
+      }
+
       if (targetSheet) currentActiveSheet = targetSheet;
 
-      // Om vi är offline: läs direkt från den kompletta cachen
       if (!navigator.onLine) {
         showError({ message: "Offline" });
         return;
       }
 
       document.getElementById('content').className = 'loading';
-      document.getElementById('content').innerHTML = 'Hämtar all flikdata...';
+      document.getElementById('content').innerHTML = 'Hämtar data...';
 
-      // Hämtar hela paketet för alla flikar i ett anrop
-      callBackend('getDataFromSheet', { sheetName: currentActiveSheet }, function(result) {
-        processAndCacheAllData(result);
-      }, showError);
+      callBackend('getDataFromSheet', { sheetName: currentActiveSheet }, showData, showError);
     }
 
-    function processAndCacheAllData(res) {
+    function showData(res) {
       if (!res) return;
 
-      // Spara tidsstämpel och hela datapaketet i localStorage
+      currentActiveSheet = res.activeSheet || currentActiveSheet;
+
       try {
-        var cacheBundle = {
+        var cacheObject = {
+          sheetName: currentActiveSheet,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          activeSheet: res.activeSheet || currentActiveSheet,
           data: res
         };
-        localStorage.setItem('aviation_full_bundle', JSON.stringify(cacheBundle));
+        if (currentActiveSheet) {
+          localStorage.setItem('aviation_weather_cache_' + currentActiveSheet, JSON.stringify(cacheObject));
+        }
+        localStorage.setItem('aviation_last_cache', JSON.stringify(cacheObject));
       } catch (e) {
-        console.log('Kunde inte spara bundle i localStorage:', e);
+        console.log('Kunde inte spara cachen:', e);
       }
 
-      allSheetsData = res;
-      currentActiveSheet = res.activeSheet || currentActiveSheet || (res.sheets ? res.sheets[0] : "");
-
-      renderCurrentSheet();
-    }
-
-    function renderCurrentSheet() {
-      if (!allSheetsData) return;
-
-      var res = allSheetsData;
       document.getElementById('status').innerHTML = '';
 
-      // Uppdatera flikväljaren med alla tillgängliga flikar
       var selector = document.getElementById('sheetSelector');
       selector.innerHTML = '';
       if (res.sheets && res.sheets.length > 0) {
@@ -321,16 +319,12 @@
         }
       }
 
-      // Hämta specifikt data för den valda fliken ur allSheetsData-objektet
-      var sheetContent = (res.sheetsData && res.sheetsData[currentActiveSheet]) ? res.sheetsData[currentActiveSheet] : res;
+      setupTimeInput('depTime', res.depTime);
+      setupTimeInput('arrTime', res.arrTime);
 
-      setupTimeInput('depTime', sheetContent.depTime);
-      setupTimeInput('arrTime', sheetContent.arrTime);
-
-      var data = sheetContent.rows;
+      var data = res.rows;
       if (!data || data.length === 0) {
         document.getElementById('content').innerHTML = 'Inga flygplatser hittades i fliken "' + currentActiveSheet + '".';
-        document.getElementById('content').classList.remove('loading');
         return;
       }
 
@@ -437,14 +431,7 @@
 
     function handleSheetChange() {
       var selected = document.getElementById('sheetSelector').value;
-      currentActiveSheet = selected;
-
-      // Om vi har hela paketet i minnet eller localStorage kan vi växla direkt utan nätverk
-      if (allSheetsData) {
-        renderCurrentSheet();
-      } else {
-        loadData(selected);
-      }
+      loadData(selected);
     }
 
     function handleCreateSheet() {
@@ -532,22 +519,20 @@
     }
 
     function showError(error) {
-      // Hämta det sparade paketet med ALLA flikar
-      var bundleRaw = localStorage.getItem('aviation_full_bundle');
+      var cachedRaw = localStorage.getItem('aviation_last_cache');
+      
+      if (!cachedRaw && currentActiveSheet) {
+        cachedRaw = localStorage.getItem('aviation_weather_cache_' + currentActiveSheet);
+      }
 
-      if (bundleRaw) {
+      if (cachedRaw) {
         try {
-          var bundle = JSON.parse(bundleRaw);
-          allSheetsData = bundle.data;
-          if (!currentActiveSheet) {
-            currentActiveSheet = bundle.activeSheet || (allSheetsData.sheets ? allSheetsData.sheets[0] : "");
-          }
-          
-          showStatus('⚠️ Offline – Visar sparad brief från ' + bundle.timestamp + ' (Alla flikar tillgängliga)', 'red');
-          renderCurrentSheet();
+          var cached = JSON.parse(cachedRaw);
+          showStatus('⚠️ Offline – Visar sparad brief från ' + cached.timestamp + ' (' + (cached.sheetName || 'Sparad flik') + ')', 'red');
+          showData(cached.data);
           return;
         } catch (e) {
-          console.error("Kunde inte läsa bundle-cachen:", e);
+          console.error("Kunde inte läsa cachen:", e);
         }
       }
       
