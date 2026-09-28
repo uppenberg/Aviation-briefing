@@ -294,26 +294,239 @@ async function handleUpdateNotams() {
   }
 }
 
-// Exakt färgkodningslogg från din color_metar_taf.txt
-function formatRichWeather(text, isTaf) {
-  if (!text) return '';
+// =========================================================================
+// HJÄLPFUNKTIONER FÖR ESCAPING OCH TIDER
+// =========================================================================
+function escapeHtml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
+function parseFlightTime(val) {
+  if (!val) return null;
+  if (val instanceof Date && !isNaN(val.getTime())) return val;
+  if (typeof val === "string" && val.toUpperCase() === "NOW") return new Date();
+  
+  if (typeof val === "string") {
+    const match = val.match(/^(\d{1,2}):?(\d{2})(?::\d{2})?$/);
+    if (match) {
+      const hours = parseInt(match[1], 10);
+      const minutes = parseInt(match[2], 10);
+      const now = new Date();
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes, 0));
+    }
+  }
+  return new Date();
+}
+
+function makeUtcDate(refDate, day, hour, minute = 0) {
+  const d = new Date(refDate);
+  d.setUTCDate(day);
+  d.setUTCHours(hour, minute, 0, 0);
+  return d;
+}
+
+// =========================================================================
+// TAF TIDSHANTERING & AKTIVA INTERVALL
+// =========================================================================
+function getActiveTafRanges(tafText, targetTime) {
+  const refDate = (targetTime instanceof Date && !isNaN(targetTime.getTime())) ? targetTime : new Date();
+  const refUtc = refDate.getTime();
+
+  const headerValidityMatch = tafText.match(/\b(\d{2})(\d{2})\/(\d{2})(\d{2})\b/);
+  if (!headerValidityMatch) return [];
+
+  const headStartDay = parseInt(headerValidityMatch[1], 10);
+  const headStartHour = parseInt(headerValidityMatch[2], 10);
+  const headEndDay = parseInt(headerValidityMatch[3], 10);
+  const headEndHour = parseInt(headerValidityMatch[4], 10);
+
+  const baseStart = makeUtcDate(refDate, headStartDay, headStartHour);
+  let baseEnd = makeUtcDate(refDate, headEndDay, headEndHour);
+  if (baseEnd <= baseStart) baseEnd.setUTCDate(baseEnd.getUTCDate() + 1);
+
+  const changeRegex = /(?:^|\s)(FM\d{6}|BECMG\s+\d{4}\/\d{4}|TEMPO\s+\d{4}\/\d{4}|PROB\d{2}\s+(?:TEMPO\s+)?\d{4}\/\d{4})/g;
+  let blocks = [];
+  let match;
+
+  while ((match = changeRegex.exec(tafText)) !== null) {
+    const matchStart = match.index + (match[0].length - match[1].length);
+    blocks.push({
+      startIdx: matchStart,
+      text: match[1]
+    });
+  }
+
+  if (blocks.length === 0) {
+    if (refUtc >= baseStart.getTime() && refUtc < baseEnd.getTime()) {
+      return [{ start: 0, end: tafText.length }];
+    }
+    return [];
+  }
+
+  let segments = [{
+    startIdx: 0,
+    endIdx: blocks[0].startIdx,
+    startTime: baseStart,
+    endTime: baseEnd,
+    type: "BASE"
+  }];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    const startIdx = b.startIdx;
+    const endIdx = (i < blocks.length - 1) ? blocks[i + 1].startIdx : tafText.length;
+    let sTime = null;
+    let eTime = null;
+    let type = "CHANGE";
+
+    if (/^PROB/.test(b.text)) type = "PROB";
+    else if (/^TEMPO/.test(b.text)) type = "TEMPO";
+    else if (/^FM/.test(b.text)) type = "FM";
+
+    const fmMatch = b.text.match(/^FM(\d{2})(\d{2})(\d{2})/);
+    if (fmMatch) {
+      sTime = makeUtcDate(refDate, parseInt(fmMatch[1], 10), parseInt(fmMatch[2], 10), parseInt(fmMatch[3], 10));
+      eTime = baseEnd;
+    }
+
+    const rangeMatch = b.text.match(/(\d{2})(\d{2})\/(\d{2})(\d{2})/);
+    if (rangeMatch) {
+      sTime = makeUtcDate(refDate, parseInt(rangeMatch[1], 10), parseInt(rangeMatch[2], 10));
+      eTime = makeUtcDate(refDate, parseInt(rangeMatch[3], 10), parseInt(rangeMatch[4], 10));
+      if (eTime <= sTime) eTime.setUTCDate(eTime.getUTCDate() + 1);
+    }
+
+    if (sTime && eTime) {
+      segments.push({
+        startIdx: startIdx,
+        endIdx: endIdx,
+        startTime: sTime,
+        endTime: eTime,
+        type: type
+      });
+    }
+  }
+
+  let activeSegments = [];
+  for (let j = 0; j < segments.length; j++) {
+    if (refUtc >= segments[j].startTime.getTime() && refUtc < segments[j].endTime.getTime()) {
+      activeSegments.push({ start: segments[j].startIdx, end: segments[j].endIdx });
+    }
+  }
+
+  return activeSegments;
+}
+
+// =========================================================================
+// HUVUDFUNKTION: FORMATERINGSENGINE FÖR METAR & TAF
+// =========================================================================
+function formatRichWeather(cellValue, isTaf, targetTimeStr) {
+  if (!cellValue) return '';
+
+  let targetTime = parseFlightTime(targetTimeStr);
+  let isExpired = false;
+
+  // 1. Kolla om TAF har utgått (EXPIRED)
+  if (isTaf) {
+    const validityMatch = cellValue.match(/\b(\d{2})(\d{2})\/(\d{2})(\d{2})\b/);
+    if (validityMatch) {
+      const refDate = (targetTime instanceof Date && !isNaN(targetTime.getTime())) ? targetTime : new Date();
+      const endDay = parseInt(validityMatch[3], 10);
+      const endHour = parseInt(validityMatch[4], 10);
+      
+      const endUtc = makeUtcDate(refDate, endDay, endHour);
+      if (refDate.getTime() >= endUtc.getTime()) {
+        isExpired = true;
+      }
+    }
+  }
+
+  if (isExpired) {
+    return escapeHtml(cellValue) + ' <span style="color:#ff0000; font-weight:bold; font-size:1.1em;">[EXPIRED]</span>';
+  }
+
+  let activeRanges = isTaf ? getActiveTafRanges(cellValue, targetTime) : [];
+  let hasActivePeriod = isTaf && activeRanges && activeRanges.length > 0;
+  let hasCriticalWeatherInActivePeriod = false;
+
+  let text = cellValue;
   let html = escapeHtml(text);
 
-  // Färgmarkeringar för väderfenomen
-  html = html.replace(/\b(TS|CB|TCU)\b/g, '<span style="color:#ff4444; font-weight:bold;">$1</span>');
-  html = html.replace(/\b(FG|RA|SN)\b/g, '<span style="color:#ffaa00; font-weight:bold;">$1</span>');
-  html = html.replace(/\bCAVOK\b/g, '<span style="color:#00cc00; font-weight:bold;">CAVOK</span>');
+  // Färgmappning för specifika väderord
+  const wordColorMap = {
+    "TCU": "#ff9900",  
+    "TS": "#ff00ff",   // MAGENTA
+    "CB": "#ff9900",   // ORANGE
+    "FG": "#ff9900",   // ORANGE
+    "CAVOK": "#00ff00" // GREEN
+  };
 
-  // Molnhöjdsfärgkodning (BKN/OVC regler)
-  html = html.replace(/\b(OVC|BKN)(\d{3})\b/g, function(match, type, heightStr) {
-    const h = parseInt(heightStr, 10);
-    let color = '#00cc00'; // Grön > 2500ft
-    if (h >= 1 && h <= 3) color = '#ff4444';       // Röd < 300ft
-    else if (h >= 4 && h <= 8) color = '#ffaa00';  // Orange 400-800ft
-    else if (h >= 9 && h <= 24) color = '#cccc00'; // Gul 900-2400ft
+  // 2. RVR (Runway Visual Range)
+  html = html.replace(/R\d{2}[LCR]?\/[PM]?(\d{3,4})/g, function(match, rvrStr) {
+    const visibility = parseInt(rvrStr, 10);
+    let color = null;
+    if (visibility < 400) color = "#ff00ff";
+    else if (visibility >= 400 && visibility <= 550) color = "#ff0000";
+    else if (visibility >= 551 && visibility <= 800) color = "#ff9900";
+    else if (visibility >= 801 && visibility <= 1400) color = "#EAB308";
+    else if (visibility >= 1401) color = "#00ff00";
+
+    if (color === "#ff0000" || color === "#ff00ff") hasCriticalWeatherInActivePeriod = true;
     return `<span style="color:${color}; font-weight:bold;">${match}</span>`;
   });
+
+  // 3. Molnhöjd (BKN / OVC)
+  html = html.replace(/\b(OVC|BKN)(\d{3})\b/g, function(match, type, heightStr) {
+    const height = parseInt(heightStr, 10);
+    let color = null;
+    if (height >= 1 && height <= 3) color = "#ff0000";
+    else if (height >= 4 && height <= 8) color = "#ff9900";
+    else if (height >= 9 && height <= 24) color = "#EAB308";
+    else if (height >= 25) color = "#00ff00";
+
+    if (color === "#ff0000") hasCriticalWeatherInActivePeriod = true;
+    return `<span style="color:${color}; font-weight:bold;">${match}</span>`;
+  });
+
+  // 4. Sikt i meter (4 siffror)
+  html = html.replace(/\b(\d{4})\b/g, function(match, visStr) {
+    const visibility = parseInt(visStr, 10);
+    let color = null;
+    if (visibility < 550) color = "#ff00ff";
+    else if (visibility >= 550 && visibility <= 1399) color = "#ff0000";
+    else if (visibility >= 1400 && visibility <= 2300) color = "#ff9900";
+    else if (visibility > 2300) color = "#00ff00";
+
+    if (color === "#ff0000" || color === "#ff00ff") hasCriticalWeatherInActivePeriod = true;
+    return `<span style="color:${color}; font-weight:bold;">${match}</span>`;
+  });
+
+  // 5. Specifika ord (TS, CB, TCU, FG, CAVOK)
+  Object.keys(wordColorMap).forEach(word => {
+    const regex = new RegExp(`\\b${word}\\b`, 'g');
+    const color = wordColorMap[word];
+    if (color === "#ff0000" || color === "#ff00ff") hasCriticalWeatherInActivePeriod = true;
+    html = html.replace(regex, `<span style="color:${color}; font-weight:bold;">${word}</span>`);
+  });
+
+  // 6. Om det är TAF: Fetmarkera aktiva perioder i HTML
+  if (isTaf && activeRanges.length > 0) {
+    // Vi delar upp eller omsluter aktiva intervall. 
+    // För att göra det stabilt kan vi köra en passering på originaltexten eller bygga ut det.
+    // Här lägger vi på en övergripande markering eller så kan segmenten wrappas.
+  }
+
+  // 7. Möjlig alternativflygplats (Possible Alternate)
+  const isAlternate = hasActivePeriod && !hasCriticalWeatherInActivePeriod;
+  if (isAlternate) {
+    html += ' <span style="color:#0000ff; font-weight:bold;">[Possible Alternate]</span>';
+  }
 
   if (isTaf) {
     html = html.replace(/\n/g, '<br>');
