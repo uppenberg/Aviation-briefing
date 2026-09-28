@@ -210,7 +210,6 @@
   <div id="content" class="loading">Hämtar data...</div>
 
   <script>
-    // Din aktiva och verifierade Apps Script Web App URL
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyxONYxCTlL4VQXCZ5udE6slFl9ASSeP4AYK1zBgljRv7QdAYkPxJcswkIUtAMWbX6P/exec";
     var currentActiveSheet = "";
 
@@ -227,7 +226,7 @@
       loadData();
     };
 
-    // Hjälpfunktion för GET-baserade API-anrop till Apps Script (CORS-säkert)
+    // GET-baserad kommunikation för att förhindra CORS-blockeringar
     function callBackend(action, payload, successCallback, failureCallback) {
       var queryParams = "?action=" + encodeURIComponent(action);
       if (payload) {
@@ -267,21 +266,25 @@
       document.getElementById('content').className = 'loading';
       document.getElementById('content').innerHTML = 'Hämtar data...';
 
+      if (targetSheet) currentActiveSheet = targetSheet;
+
       callBackend('getDataFromSheet', { sheetName: targetSheet || currentActiveSheet }, showData, showError);
     }
 
     function showData(res) {
       if (!res) return;
 
-      currentActiveSheet = res.activeSheet;
+      currentActiveSheet = res.activeSheet || currentActiveSheet;
 
-      // Spara i localStorage för offline-stöd
+      // Sparar BÅDE flikspecifik och fall-back "senaste"-cache i localStorage
       try {
         var cacheObject = {
+          sheetName: currentActiveSheet,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           data: res
         };
-        localStorage.setItem('aviation_weather_cache_' + res.activeSheet, JSON.stringify(cacheObject));
+        localStorage.setItem('aviation_weather_cache_' + currentActiveSheet, JSON.stringify(cacheObject));
+        localStorage.setItem('aviation_last_cache', JSON.stringify(cacheObject));
       } catch (e) {
         console.log('Kunde inte spara cachen:', e);
       }
@@ -500,14 +503,26 @@
     }
 
     function showError(error) {
+      // 1. Försök hämta flikspecifik cache
       var cachedRaw = localStorage.getItem('aviation_weather_cache_' + currentActiveSheet);
-      if (cachedRaw) {
-        var cached = JSON.parse(cachedRaw);
-        showStatus('⚠️ Offline – Visar sparad brief från ' + cached.timestamp, 'red');
-        showData(cached.data);
-      } else {
-        document.getElementById('content').innerHTML = '<div style="padding:12px; color:#d9534f; font-weight:bold;">⚠️ Ingen anslutning och ingen sparad data finns.</div>';
+      
+      // 2. Om flikspecifik saknas, hämta senast sparade cache oavsett flik
+      if (!cachedRaw) {
+        cachedRaw = localStorage.getItem('aviation_last_cache');
       }
+
+      if (cachedRaw) {
+        try {
+          var cached = JSON.parse(cachedRaw);
+          showStatus('⚠️ Offline – Visar sparad brief från ' + cached.timestamp + ' (' + (cached.sheetName || 'Okänd flik') + ')', 'red');
+          showData(cached.data);
+          return;
+        } catch (e) {
+          console.error("Kunde inte läsa cachen:", e);
+        }
+      }
+      
+      document.getElementById('content').innerHTML = '<div style="padding:12px; color:#d9534f; font-weight:bold;">⚠️ Ingen anslutning och ingen sparad data finns.</div>';
     }
   </script>
 </body>
