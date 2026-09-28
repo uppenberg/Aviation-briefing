@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Aviation Weather & NOTAM</title>
+  
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0056b3">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="https://img.icons8.com/color/192/airplane-mode-on.png">
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #ffffff;
+      color: #222222;
+      margin: 0;
+      padding: 8px;
+    }
+    .panel {
+      background-color: #f8f9fa;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+    }
+    .panel-title {
+      font-size: 11px;
+      font-weight: bold;
+      color: #555;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+    .flex-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    select, input[type="text"] {
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    select { background-color: #ffffff; font-weight: bold; }
+    .time-input { width: 75px; }
+    
+    input.is-now {
+      color: #555555;
+      font-style: italic;
+      font-weight: bold;
+      background-color: #e0e0e0;
+      border-color: #b0b0b0;
+    }
+
+    .icao-input { width: 75px; text-transform: uppercase; }
+
+    button {
+      padding: 6px 10px;
+      background-color: #0056b3;
+      color: #ffffff;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover { background-color: #003d80; }
+    button.secondary { background-color: #6c757d; }
+    
+    button.danger {
+      background-color: #dc3545;
+    }
+    button.danger:hover {
+      background-color: #bd2130;
+    }
+
+    .loading { color: #666; font-style: italic; font-size: 12px; }
+
+    .table-container {
+      width: 100%;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 6px;
+      background-color: #ffffff;
+      border: 1px solid #dddddd;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 6px 6px;
+      text-align: left;
+      border: 1px solid #e0e0e0;
+      font-size: 11.5px;
+      font-family: monospace;
+      position: relative;
+      word-wrap: break-word;
+    }
+    th {
+      background-color: #f4f6f8;
+      color: #333333;
+      font-family: sans-serif;
+      font-weight: bold;
+      font-size: 11px;
+    }
+    tr:nth-child(even) { background-color: #fafafa; }
+
+    .col-icao {
+      width: 65px !important;
+      text-align: center;
+      font-weight: bold;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .col-metar { width: 38%; line-height: 1.25; }
+    .col-taf { width: 44%; line-height: 1.25; }
+    .col-notam { width: auto; }
+
+    .delete-row-btn {
+      display: none;
+      background-color: #dc3545;
+      color: #ffffff;
+      border: none;
+      border-radius: 3px;
+      font-size: 10px;
+      padding: 2px 4px;
+      margin-left: 4px;
+      cursor: pointer;
+    }
+
+    .has-note {
+      background-color: #f0f0f0 !important;
+      border-left: 3px solid #888888 !important;
+    }
+    .has-note:hover::after {
+      content: attr(data-note);
+      position: absolute;
+      left: 0;
+      top: 100%;
+      z-index: 100;
+      background: #222222;
+      color: #ffffff;
+      padding: 8px;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 11px;
+      min-width: 260px;
+      max-width: 320px;
+    }
+
+    .notam-badge {
+      display: inline-block;
+      background-color: #e3f2fd;
+      color: #0d47a1;
+      padding: 2px 5px;
+      border-radius: 3px;
+      font-size: 10px;
+      margin: 1px 2px 1px 0;
+      font-family: sans-serif;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- FLIKVÄLJARE & RADERA FLIK -->
+  <div class="panel">
+    <div class="panel-title">Välj, skapa eller radera flik</div>
+    <div class="flex-row">
+      <label>Aktiv Flik: 
+        <select id="sheetSelector" onchange="handleSheetChange()">
+          <option>Laddar flikar...</option>
+        </select>
+      </label>
+      <input type="text" id="newSheetName" placeholder="Ny Fliknamn..." style="width: 100px;">
+      <button onclick="handleCreateSheet()">+ Skapa</button>
+      <button class="danger" onclick="handleDeleteSheet()" title="Ta bort aktiv flik">🗑️ Ta bort</button>
+    </div>
+  </div>
+
+  <!-- FLYGTIDER & KONTROLLER -->
+  <div class="panel">
+    <div class="panel-title">Flight Planning & Controls</div>
+    <div class="flex-row">
+      <label>DEP: <input type="text" id="depTime" class="time-input" placeholder="NOW"></label>
+      <label>ARR: <input type="text" id="arrTime" class="time-input" placeholder="NOW"></label>
+      <button onclick="handleSaveTimes()">Spara tider</button>
+      <button class="secondary" onclick="handleUpdateWeather()">🔄 METAR/TAF</button>
+      <button class="secondary" onclick="handleUpdateNotams()">📋 NOTAM</button>
+    </div>
+  </div>
+
+  <!-- LÄGG TILL ICAO -->
+  <div class="panel">
+    <div class="panel-title">Ny Flygplats</div>
+    <div class="flex-row">
+      <input type="text" id="newIcao" class="icao-input" placeholder="ESNU" maxlength="4">
+      <button onclick="handleAddIcao()">+ Lägg till ICAO</button>
+    </div>
+  </div>
+
+  <div id="status"></div>
+  <div id="content" class="loading">Hämtar data...</div>
+
+  <script>
+    // Byt ut denna mot din publicerade Apps Script-URL
+    const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbz8Xg00ntQ-4bXIxjcyowa3vUHnqiggCDpvif4TTd1RoBfEI7w8Bo5pJBelJPaYD_7B/exec";
+    var currentActiveSheet = "";
+
+    // Registrera Service Worker för PWA
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('Service Worker registrerad:', reg.scope))
+          .catch(err => console.log('Service Worker fel:', err));
+      });
+    }
+
+    window.onload = function() {
+      loadData();
+    };
+
+    // Hjälpfunktion för API-anrop till Apps Script backend
+    function callBackend(action, payload, successCallback, failureCallback) {
+      const bodyData = { action: action, ...payload };
+
+      fetch(GAS_WEB_APP_URL, {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(bodyData)
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.status === 'error') {
+          if (failureCallback) failureCallback({ message: data.message });
+        } else {
+          if (successCallback) successCallback(data.result);
+        }
+      })
+      .catch(err => {
+        if (failureCallback) failureCallback(err);
+      });
+    }
+
+    function loadData(targetSheet) {
+      document.getElementById('content').className = 'loading';
+      document.getElementById('content').innerHTML = 'Hämtar data...';
+
+      callBackend('getDataFromSheet', { sheetName: targetSheet || currentActiveSheet }, showData, showError);
+    }
+
+    function showData(res) {
+      if (!res) return;
+
+      currentActiveSheet = res.activeSheet;
+
+      // Spara i localStorage för offline-stöd
+      try {
+        var cacheObject = {
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          data: res
+        };
+        localStorage.setItem('aviation_weather_cache_' + res.activeSheet, JSON.stringify(cacheObject));
+      } catch (e) {
+        console.log('Kunde inte spara cachen:', e);
+      }
+
+      document.getElementById('status').innerHTML = '';
+
+      var selector = document.getElementById('sheetSelector');
+      selector.innerHTML = '';
+      if (res.sheets && res.sheets.length > 0) {
+        for (var s = 0; s < res.sheets.length; s++) {
+          var opt = document.createElement('option');
+          opt.value = res.sheets[s];
+          opt.text = res.sheets[s];
+          if (res.sheets[s] === currentActiveSheet) opt.selected = true;
+          selector.appendChild(opt);
+        }
+      }
+
+      setupTimeInput('depTime', res.depTime);
+      setupTimeInput('arrTime', res.arrTime);
+
+      var data = res.rows;
+      if (!data || data.length === 0) {
+        document.getElementById('content').innerHTML = 'Inga flygplatser hittades i fliken "' + currentActiveSheet + '".';
+        return;
+      }
+
+      var html = '<div class="table-container"><table>';
+      html += '<tr><th class="col-icao">ICAO</th><th class="col-metar">METAR</th><th class="col-taf">TAF</th><th class="col-notam">NOTAM</th></tr>';
+
+      for (var i = 0; i < data.length; i++) {
+        var row = data[i];
+
+        var icaoClass = 'col-icao ' + (row.allNotamNote ? 'has-note' : '');
+        var icaoAttr = row.allNotamNote ? 'data-note="' + escapeHtml(row.allNotamNote) + '"' : '';
+
+        var metarClass = 'col-metar ' + (row.metarNote ? 'has-note' : '');
+        var metarAttr = row.metarNote ? 'data-note="' + escapeHtml(row.metarNote) + '"' : '';
+
+        var tafClass = 'col-taf ' + (row.tafNote ? 'has-note' : '');
+        var tafAttr = row.tafNote ? 'data-note="' + escapeHtml(row.tafNote) + '"' : '';
+
+        var notamCellHtml = "";
+        if (row.filteredNotams && row.filteredNotams.length > 0) {
+          for (var n = 0; n < row.filteredNotams.length; n++) {
+            var notamText = row.filteredNotams[n];
+            notamCellHtml += '<div class="has-note notam-badge" data-note="' + escapeHtml(notamText) + '">📌 ' + (n + 1) + '</div>';
+          }
+        } else {
+          notamCellHtml = '<span style="color: #aaa;">-</span>';
+        }
+
+        html += '<tr>';
+        html += '<td class="' + icaoClass + '" ' + icaoAttr + ' onclick="toggleDeleteButton(\'btn-' + row.icao + '\')">';
+        html += '<span>' + row.icao + '</span>';
+        html += '<button id="btn-' + row.icao + '" class="delete-row-btn" onclick="handleDeleteIcao(event, \'' + row.icao + '\')">❌</button>';
+        html += '</td>';
+        html += '<td class="' + metarClass + '" ' + metarAttr + '>' + row.metarHtml + '</td>';
+        html += '<td class="' + tafClass + '" ' + tafAttr + '>' + row.tafHtml + '</td>';
+        html += '<td class="col-notam">' + notamCellHtml + '</td>';
+        html += '</tr>';
+      }
+      html += '</table></div>';
+
+      document.getElementById('content').innerHTML = html;
+      document.getElementById('content').classList.remove('loading');
+    }
+
+    function toggleDeleteButton(btnId) {
+      var btn = document.getElementById(btnId);
+      if (!btn) return;
+      btn.style.display = (btn.style.display === 'inline-block') ? 'none' : 'inline-block';
+    }
+
+    function handleDeleteIcao(event, icao) {
+      event.stopPropagation();
+      var confirmed = confirm("Är du säker på att du vill ta bort " + icao + " från fliken \"" + currentActiveSheet + "\"?");
+      if (!confirmed) return;
+
+      showStatus('Tar bort ' + icao + '...', 'loading');
+
+      callBackend('deleteIcaoRow', { sheetName: currentActiveSheet, icaoToDelete: icao }, function() {
+        showStatus('✔ ' + icao + ' har tagits bort.', 'green');
+        loadData(currentActiveSheet);
+      }, function(err) {
+        showStatus('Fel vid radering: ' + err.message, 'red');
+      });
+    }
+
+    function handleDeleteSheet() {
+      var confirmed = confirm("⚠️ VARNING: Är du säker på att du vill ta bort hela fliken \"" + currentActiveSheet + "\" och all dess data?");
+      if (!confirmed) return;
+
+      showStatus('Tar bort fliken ' + currentActiveSheet + '...', 'loading');
+
+      callBackend('deleteSheet', { sheetName: currentActiveSheet }, function(nextSheet) {
+        showStatus('✔ Fliken har tagits bort.', 'green');
+        loadData(nextSheet);
+      }, function(err) {
+        showStatus('Fel vid radering av flik: ' + err.message, 'red');
+      });
+    }
+
+    function setupTimeInput(id, value) {
+      var input = document.getElementById(id);
+      input.value = value || "NOW";
+
+      if (input.value.toUpperCase() === "NOW") {
+        input.classList.add("is-now");
+      } else {
+        input.classList.remove("is-now");
+      }
+
+      input.onfocus = function() {
+        if (this.value.toUpperCase() === "NOW") {
+          this.value = "";
+          this.classList.remove("is-now");
+        }
+      };
+
+      input.onblur = function() {
+        if (this.value.trim() === "") {
+          this.value = "NOW";
+          this.classList.add("is-now");
+        }
+      };
+    }
+
+    function handleSheetChange() {
+      var selected = document.getElementById('sheetSelector').value;
+      loadData(selected);
+    }
+
+    function handleCreateSheet() {
+      var nameInput = document.getElementById('newSheetName');
+      var sheetName = nameInput.value.trim();
+      if (!sheetName) return;
+
+      showStatus('Skapar fliken "' + sheetName + '"...', 'loading');
+
+      callBackend('createNewSheet', { newSheetName: sheetName }, function(createdName) {
+        showStatus('✔ Fliken "' + createdName + '" skapad!', 'green');
+        nameInput.value = '';
+        loadData(createdName);
+      }, function(err) {
+        showStatus('Fel: ' + err.message, 'red');
+      });
+    }
+
+    function handleSaveTimes() {
+      var depInput = document.getElementById('depTime').value.trim();
+      var arrInput = document.getElementById('arrTime').value.trim();
+
+      var dep = depInput.toUpperCase() === "NOW" ? "" : depInput;
+      var arr = arrInput.toUpperCase() === "NOW" ? "" : arrInput;
+
+      showStatus('Sparar tider för ' + currentActiveSheet + '...', 'loading');
+
+      callBackend('updateFlightTimes', { sheetName: currentActiveSheet, depTime: dep, arrTime: arr }, function() {
+        showStatus('✔ Flight times sparade!', 'green');
+        loadData(currentActiveSheet);
+      }, function(err) {
+        showStatus('Fel: ' + err.message, 'red');
+      });
+    }
+
+    function handleUpdateWeather() {
+      showStatus('Uppdaterar METAR & TAF för ' + currentActiveSheet + '...', 'loading');
+      callBackend('runWeatherUpdate', { sheetName: currentActiveSheet }, function(msg) {
+        showStatus('✔ ' + msg, 'green');
+        loadData(currentActiveSheet);
+      }, function(err) {
+        showStatus('Fel: ' + err.message, 'red');
+      });
+    }
+
+    function handleUpdateNotams() {
+      showStatus('Uppdaterar NOTAMs för ' + currentActiveSheet + '...', 'loading');
+      callBackend('runNotamUpdate', { sheetName: currentActiveSheet }, function(msg) {
+        showStatus('✔ ' + msg, 'green');
+        loadData(currentActiveSheet);
+      }, function(err) {
+        showStatus('Fel: ' + err.message, 'red');
+      });
+    }
+
+    function handleAddIcao() {
+      var input = document.getElementById('newIcao');
+      var icao = input.value.trim();
+      if (!icao) return;
+
+      showStatus('Lägger till ' + icao.toUpperCase() + ' i ' + currentActiveSheet + '...', 'loading');
+
+      callBackend('addIcaoCode', { sheetName: currentActiveSheet, newIcao: icao }, function(addedIcao) {
+        showStatus('✔ ' + addedIcao + ' tillagd!', 'green');
+        input.value = '';
+        loadData(currentActiveSheet);
+      }, function(err) {
+        showStatus('Fel: ' + err.message, 'red');
+      });
+    }
+
+    function showStatus(msg, type) {
+      var statusDiv = document.getElementById('status');
+      if (type === 'loading') {
+        statusDiv.innerHTML = '<p class="loading">' + msg + '</p>';
+      } else if (type === 'green') {
+        statusDiv.innerHTML = '<p style="color: green; font-weight: bold; font-size: 12px;">' + msg + '</p>';
+      } else if (type === 'red') {
+        statusDiv.innerHTML = '<p style="color: red; font-weight: bold; font-size: 12px;">' + msg + '</p>';
+      }
+    }
+
+    function escapeHtml(text) {
+      return text.replace(/"/g, '&quot;');
+    }
+
+    function showError(error) {
+      var cachedRaw = localStorage.getItem('aviation_weather_cache_' + currentActiveSheet);
+      if (cachedRaw) {
+        var cached = JSON.parse(cachedRaw);
+        showStatus('⚠️ Offline – Visar sparad brief från ' + cached.timestamp, 'red');
+        showData(cached.data);
+      } else {
+        document.getElementById('content').innerHTML = '<div style="padding:12px; color:#d9534f; font-weight:bold;">⚠️ Ingen anslutning och ingen sparad data finns.</div>';
+      }
+    }
+  </script>
+</body>
+</html>
