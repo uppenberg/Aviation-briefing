@@ -1,4 +1,4 @@
-const GAS_WEB_APP_URL = "HÄR_KLISTRAR_DU_IN_DIN_WEBBSPELAR_URL_FRÅN_GOOGLE";
+const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzThuf3NngpZhXu2-2egq856EXjpKpmTulHC_lCkMmOJbhBqJaZUspsw2zWpcViPLLh/exec";
 const STORAGE_KEY = 'aviation_viewer_db';
 
 let db = loadDatabase();
