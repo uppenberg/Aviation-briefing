@@ -151,7 +151,6 @@ function handleCreateSheet() {
   nameInput.value = '';
   showStatus('✔ Fliken "' + sheetName + '" skapad!', 'green');
   
-  // Om den skapades med '_' döljs den automatiskt från väljaren
   if (sheetName.startsWith('_')) {
     alert('Fliken skapades men är dold eftersom den börjar med "_".');
     renderApp();
@@ -222,12 +221,17 @@ function handleSaveTimes() {
   handleUpdateWeather();
 }
 
-// --- DIREKT API-HÄMTNING ---
+// --- UPPKOPPLING OCH CACHING FÖR METAR & TAF ---
 async function handleUpdateWeather() {
   const icaos = db.sheets[db.activeSheet].icaos;
   if (!icaos || icaos.length === 0) return;
 
-  showStatus('Uppdaterar METAR & TAF via NOAA/AviationWeather...', 'loading');
+  if (!navigator.onLine) {
+    showStatus('⚠️ Du är offline. Visar sparad (cachad) väderdata.', 'red');
+    return;
+  }
+
+  showStatus('Hämtar färsk METAR & TAF från NOAA...', 'loading');
 
   try {
     const icaoStr = icaos.join(',');
@@ -237,35 +241,102 @@ async function handleUpdateWeather() {
       fetch(`https://aviationweather.gov/api/data/taf?ids=${icaoStr}&format=raw`)
     ]);
 
+    if (!metarRes.ok || !tafRes.ok) throw new Error("HTTP-fel vid hämtning");
+
     const metarText = await metarRes.text();
     const tafText = await tafRes.text();
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' UTC';
 
     icaos.forEach(icao => {
       if (!db.weatherCache[icao]) db.weatherCache[icao] = {};
 
-      const metarMatch = metarText.split('\n').find(l => l.includes(icao));
-      const tafMatch = tafText.split('\n').find(l => l.includes(icao));
+      const metarLines = metarText.split('\n').filter(l => l.startsWith(icao) || l.includes(` ${icao} `));
+      const tafLines = tafText.split('\n').filter(l => l.startsWith(icao) || l.includes(`TAF ${icao}`));
 
-      db.weatherCache[icao].metarHtml = metarMatch ? escapeHtml(metarMatch) : 'Ingen METAR';
-      db.weatherCache[icao].tafHtml = tafMatch ? escapeHtml(tafMatch) : 'Ingen TAF';
+      if (metarLines.length > 0) {
+        db.weatherCache[icao].metarHtml = formatFlightRules(metarLines[0]);
+        db.weatherCache[icao].metarNote = `[Hämtad ${timestamp}]\n` + metarLines[0];
+      }
+      
+      if (tafLines.length > 0) {
+        db.weatherCache[icao].tafHtml = escapeHtml(tafLines.join('\n')).replace(/\n/g, '<br>');
+        db.weatherCache[icao].tafNote = `[Hämtad ${timestamp}]\n` + tafLines.join('\n');
+      }
     });
 
     saveDatabase();
-    showStatus('✔ METAR & TAF uppdaterat!', 'green');
+    showStatus(`✔ Weather uppdaterad (${timestamp})!`, 'green');
     renderApp();
   } catch (err) {
-    showStatus('Fel vid hämtning av väder: ' + err.message, 'red');
+    showStatus('⚠️ Kunde inte nå servern. Visar sparad väderdata.', 'red');
   }
 }
 
+// --- UPPKOPPLING OCH CACHING FÖR NOTAMs ---
 async function handleUpdateNotams() {
-  showStatus('NOTAM-hämtning kräver anpassat API-anrop eller proxy...', 'loading');
-  setTimeout(() => {
-    showStatus('✔ NOTAM uppdaterade (Simulerad).', 'green');
-  }, 1000);
+  const icaos = db.sheets[db.activeSheet].icaos;
+  if (!icaos || icaos.length === 0) return;
+
+  if (!navigator.onLine) {
+    showStatus('⚠️ Du är offline. Visar sparade (cachade) NOTAMs.', 'red');
+    return;
+  }
+
+  showStatus('Hämtar färska NOTAMs...', 'loading');
+
+  try {
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' UTC';
+
+    for (const icao of icaos) {
+      const targetUrl = `https://notams.aim.faa.gov/notamSearch/search?locationGroup=${icao}&format=json`;
+      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+
+      const response = await fetch(proxyUrl);
+      if (!response.ok) continue;
+
+      const data = await response.json();
+      let notamList = [];
+
+      if (data.contents) {
+        try {
+          const parsed = JSON.parse(data.contents);
+          if (parsed.notamList && parsed.notamList.length > 0) {
+            notamList = parsed.notamList.map(n => 
+              `[Hämtad ${timestamp}]\n` + (n.icaoMessage || n.traditionalMessage || 'NOTAM saknar text')
+            );
+          }
+        } catch (e) {
+          console.error("Kunde inte tolka NOTAM JSON för " + icao, e);
+        }
+      }
+
+      if (notamList.length > 0) {
+        db.notamCache[icao] = notamList;
+      }
+    }
+
+    saveDatabase();
+    showStatus(`✔ NOTAMs uppdaterade (${timestamp})!`, 'green');
+    renderApp();
+  } catch (err) {
+    showStatus('⚠️ Kunde inte hämta nya NOTAMs. Visar sparad data.', 'red');
+  }
 }
 
 // --- HJÄLPFUNKTIONER ---
+function formatFlightRules(metar) {
+  if (!metar || metar.includes('Ingen METAR')) return metar;
+
+  let badge = '<span style="color: #28a745; font-weight: bold;">[VFR]</span> ';
+  if (metar.includes('BKN00') || metar.includes('OVC00') || metar.includes('FG') || metar.includes('BR')) {
+    badge = '<span style="color: #dc3545; font-weight: bold;">[IFR/LVP]</span> ';
+  } else if (metar.includes('BKN01') || metar.includes('OVC01')) {
+    badge = '<span style="color: #ffc107; font-weight: bold;">[MVFR]</span> ';
+  }
+
+  return badge + escapeHtml(metar);
+}
+
 function setupTimeInput(id, value) {
   const input = document.getElementById(id);
   input.value = value || "NOW";
