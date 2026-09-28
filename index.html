@@ -263,12 +263,31 @@
     }
 
     function loadData(targetSheet) {
-      document.getElementById('content').className = 'loading';
-      document.getElementById('content').innerHTML = 'Hämtar data...';
+      // 1. Om inget fliknamn angivits, försök kom ihåg senast valda flik från localStorage
+      if (!targetSheet && !currentActiveSheet) {
+        var lastCacheRaw = localStorage.getItem('aviation_last_cache');
+        if (lastCacheRaw) {
+          try {
+            var parsedLast = JSON.parse(lastCacheRaw);
+            if (parsedLast && parsedLast.sheetName) {
+              currentActiveSheet = parsedLast.sheetName;
+            }
+          } catch(e) {}
+        }
+      }
 
       if (targetSheet) currentActiveSheet = targetSheet;
 
-      callBackend('getDataFromSheet', { sheetName: targetSheet || currentActiveSheet }, showData, showError);
+      // 2. Om vi redan vet att vi är helt offline vid start, ladda cachen direkt
+      if (!navigator.onLine) {
+        showError({ message: "Offline" });
+        return;
+      }
+
+      document.getElementById('content').className = 'loading';
+      document.getElementById('content').innerHTML = 'Hämtar data...';
+
+      callBackend('getDataFromSheet', { sheetName: currentActiveSheet }, showData, showError);
     }
 
     function showData(res) {
@@ -283,7 +302,9 @@
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           data: res
         };
-        localStorage.setItem('aviation_weather_cache_' + currentActiveSheet, JSON.stringify(cacheObject));
+        if (currentActiveSheet) {
+          localStorage.setItem('aviation_weather_cache_' + currentActiveSheet, JSON.stringify(cacheObject));
+        }
         localStorage.setItem('aviation_last_cache', JSON.stringify(cacheObject));
       } catch (e) {
         console.log('Kunde inte spara cachen:', e);
@@ -503,18 +524,18 @@
     }
 
     function showError(error) {
-      // 1. Försök hämta flikspecifik cache
-      var cachedRaw = localStorage.getItem('aviation_weather_cache_' + currentActiveSheet);
+      // 1. Sök i sista hand efter den globala "senaste"-cachen
+      var cachedRaw = localStorage.getItem('aviation_last_cache');
       
-      // 2. Om flikspecifik saknas, hämta senast sparade cache oavsett flik
-      if (!cachedRaw) {
-        cachedRaw = localStorage.getItem('aviation_last_cache');
+      // 2. Sök annars efter flikspecifik cache om fliknamn finns
+      if (!cachedRaw && currentActiveSheet) {
+        cachedRaw = localStorage.getItem('aviation_weather_cache_' + currentActiveSheet);
       }
 
       if (cachedRaw) {
         try {
           var cached = JSON.parse(cachedRaw);
-          showStatus('⚠️ Offline – Visar sparad brief från ' + cached.timestamp + ' (' + (cached.sheetName || 'Okänd flik') + ')', 'red');
+          showStatus('⚠️ Offline – Visar sparad brief från ' + cached.timestamp + ' (' + (cached.sheetName || 'Sparad flik') + ')', 'red');
           showData(cached.data);
           return;
         } catch (e) {
