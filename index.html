@@ -228,28 +228,36 @@
     };
 
     // Hjälpfunktion för API-anrop till Apps Script backend
-    function callBackend(action, payload, successCallback, failureCallback) {
-      const bodyData = { action: action, ...payload };
+function callBackend(action, payload, successCallback, failureCallback) {
+  const bodyData = { action: action, ...payload };
 
-      fetch(GAS_WEB_APP_URL, {
-        method: 'POST',
-        mode: 'cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(bodyData)
-      })
-      .then(response => response.json())
-      .then(data => {
-        if (data.status === 'error') {
-          if (failureCallback) failureCallback({ message: data.message });
-        } else {
-          if (successCallback) successCallback(data.result);
-        }
-      })
-      .catch(err => {
-        if (failureCallback) failureCallback(err);
-      });
+  fetch(GAS_WEB_APP_URL, {
+    method: 'POST',
+    mode: 'cors',
+    redirect: 'follow', // Tvingar fetch att följa Googles redirects
+    headers: { 
+      'Content-Type': 'text/plain;charset=utf-8' // Undviker CORS preflight-spärrar
+    },
+    body: JSON.stringify(bodyData)
+  })
+  .then(response => {
+    if (!response.ok) {
+      throw new Error('Nätverkssvar inte OK (' + response.status + ')');
     }
-
+    return response.json();
+  })
+  .then(data => {
+    if (data.status === 'error') {
+      if (failureCallback) failureCallback({ message: data.message });
+    } else {
+      if (successCallback) successCallback(data.result);
+    }
+  })
+  .catch(err => {
+    console.error('Backend fetch-fel:', err);
+    if (failureCallback) failureCallback(err);
+  });
+}
     function loadData(targetSheet) {
       document.getElementById('content').className = 'loading';
       document.getElementById('content').innerHTML = 'Hämtar data...';
