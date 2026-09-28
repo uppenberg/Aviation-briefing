@@ -210,16 +210,16 @@
   <div id="content" class="loading">Hämtar data...</div>
 
   <script>
-    // Byt ut denna mot din publicerade Apps Script-URL
+    // Din aktiva och verifierade Apps Script Web App URL
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyxONYxCTlL4VQXCZ5udE6slFl9ASSeP4AYK1zBgljRv7QdAYkPxJcswkIUtAMWbX6P/exec";
     var currentActiveSheet = "";
 
     // Registrera Service Worker för PWA
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
+      window.addEventListener('load', function() {
         navigator.serviceWorker.register('./sw.js')
-          .then(reg => console.log('Service Worker registrerad:', reg.scope))
-          .catch(err => console.log('Service Worker fel:', err));
+          .then(function(reg) { console.log('Service Worker registrerad:', reg.scope); })
+          .catch(function(err) { console.log('Service Worker fel:', err); });
       });
     }
 
@@ -227,41 +227,42 @@
       loadData();
     };
 
-    // Hjälpfunktion för API-anrop till Apps Script backend
-function callBackend(action, payload, successCallback, failureCallback) {
-  var queryParams = "?action=" + encodeURIComponent(action);
-  if (payload) {
-    for (var key in payload) {
-      if (payload.hasOwnProperty(key) && payload[key] !== undefined && payload[key] !== null) {
-        queryParams += "&" + encodeURIComponent(key) + "=" + encodeURIComponent(payload[key]);
+    // Hjälpfunktion för GET-baserade API-anrop till Apps Script (CORS-säkert)
+    function callBackend(action, payload, successCallback, failureCallback) {
+      var queryParams = "?action=" + encodeURIComponent(action);
+      if (payload) {
+        for (var key in payload) {
+          if (payload.hasOwnProperty(key) && payload[key] !== undefined && payload[key] !== null) {
+            queryParams += "&" + encodeURIComponent(key) + "=" + encodeURIComponent(payload[key]);
+          }
+        }
       }
-    }
-  }
 
-  var fullUrl = GAS_WEB_APP_URL + queryParams;
+      var fullUrl = GAS_WEB_APP_URL + queryParams;
 
-  fetch(fullUrl, {
-    method: 'GET',
-    redirect: 'follow'
-  })
-  .then(function(response) {
-    if (!response.ok) {
-      throw new Error('Nätverkssvar inte OK (' + response.status + ')');
+      fetch(fullUrl, {
+        method: 'GET',
+        redirect: 'follow'
+      })
+      .then(function(response) {
+        if (!response.ok) {
+          throw new Error('Nätverkssvar inte OK (' + response.status + ')');
+        }
+        return response.json();
+      })
+      .then(function(data) {
+        if (data.status === 'error') {
+          if (failureCallback) failureCallback({ message: data.message });
+        } else {
+          if (successCallback) successCallback(data.result);
+        }
+      })
+      .catch(function(err) {
+        console.error('Backend fetch-fel:', err);
+        if (failureCallback) failureCallback(err);
+      });
     }
-    return response.json();
-  })
-  .then(function(data) {
-    if (data.status === 'error') {
-      if (failureCallback) failureCallback({ message: data.message });
-    } else {
-      if (successCallback) successCallback(data.result);
-    }
-  })
-  .catch(function(err) {
-    console.error('Backend fetch-fel:', err);
-    if (failureCallback) failureCallback(err);
-  });
-}
+
     function loadData(targetSheet) {
       document.getElementById('content').className = 'loading';
       document.getElementById('content').innerHTML = 'Hämtar data...';
