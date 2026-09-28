@@ -7,11 +7,6 @@ const defaultData = {
       depTime: 'NOW',
       arrTime: 'NOW',
       icaos: ['ESNU', 'ESSA']
-    },
-    '_DoldFlik': {
-      depTime: 'NOW',
-      arrTime: 'NOW',
-      icaos: ['ESGG']
     }
   },
   weatherCache: {},
@@ -76,7 +71,8 @@ function renderTable(icaos) {
   }
 
   let html = '<div class="table-container"><table>';
-  html += '<tr><th class="col-icao">ICAO</th><th class="col-metar">METAR</th><th class="col-taf">TAF</th><th class="col-notam">NOTAM (Öppettider m.m.)</th></tr>';
+  // Skapar tabellhuvud med ICAO, METAR, TAF och dynamiska NOTAM-kolumner (precis som i arkskriptet)
+  html += '<tr><th class="col-icao">ICAO</th><th class="col-metar">METAR</th><th class="col-taf">TAF</th><th class="col-notam">NOTAM 1 (Öppettider)</th><th class="col-notam">NOTAM 2</th></tr>';
 
   icaos.forEach(icao => {
     const wData = (db.weatherCache[icao]) || {};
@@ -86,34 +82,29 @@ function renderTable(icaos) {
     const tafHtml = wData.tafHtml || '<span style="color:#aaa;">-</span>';
     const metarNote = wData.metarNote || '';
     const tafNote = wData.tafNote || '';
+    const allNotamsText = notamData.allNotamsSummary || '';
 
-    const metarClass = 'col-metar ' + (metarNote ? 'has-note' : '');
-    const metarAttr = metarNote ? 'data-note="' + escapeHtml(metarNote) + '"' : '';
+    const metarAttr = metarNote ? 'class="col-metar has-note" data-note="' + escapeHtml(metarNote) + '"' : 'class="col-metar"';
+    const tafAttr = tafNote ? 'class="col-taf has-note" data-note="' + escapeHtml(tafNote) + '"' : 'class="col-taf"';
 
-    const tafClass = 'col-taf ' + (tafNote ? 'has-note' : '');
-    const tafAttr = tafNote ? 'data-note="' + escapeHtml(tafNote) + '"' : '';
-
-    // NOTAM-hantering med filtrering och kolumnvisning
+    // Hämtar de filtrerade NOTAM-texterna för kolumnerna (ex. matchande öppettider)
     const filteredNotams = notamData.filteredNotams || [];
-    const allNotamsText = notamData.allNotamsSummary || 'Inga aktiva NOTAMs';
-
-    let notamCellHtml = "";
-    if (filteredNotams.length > 0) {
-      filteredNotams.forEach((notamText, n) => {
-        notamCellHtml += '<div class="has-note notam-badge" data-note="' + escapeHtml(notamText) + '">📌 ' + (n + 1) + ' (Filt)</div>';
-      });
-    } else {
-      notamCellHtml = '<span style="color: #aaa;" class="has-note" data-note="' + escapeHtml(allNotamsText) + '">Inga matchande (Visa alla)</span>';
-    }
+    const notam1 = filteredNotams[0] ? escapeHtml(filteredNotams[0]) : '';
+    const notam2 = filteredNotams[1] ? escapeHtml(filteredNotams[1]) : '';
 
     html += '<tr>';
     html += '<td class="col-icao" onclick="toggleDeleteButton(\'btn-' + icao + '\')">';
     html += '<span>' + icao + '</span>';
     html += '<button id="btn-' + icao + '" class="delete-row-btn" onclick="handleDeleteIcao(event, \'' + icao + '\')">❌</button>';
     html += '</td>';
-    html += '<td class="' + metarClass + '" ' + metarAttr + '>' + metarHtml + '</td>';
-    html += '<td class="' + tafClass + '" ' + tafAttr + '>' + tafHtml + '</td>';
-    html += '<td class="col-notam" data-note="' + escapeHtml(allNotamsText) + '"><div class="has-note" style="display:inline-block; width:100%;">' + notamCellHtml + '</div></td>';
+    html += '<td ' + metarAttr + '>' + metarHtml + '</td>';
+    html += '<td ' + tafAttr + '>' + tafHtml + '</td>';
+    
+    // Kolumn för NOTAM 1 med anteckning (hela listan i bakgrunden)
+    html += '<td class="col-notam has-note" data-note="' + escapeHtml(allNotamsText) + '">' + (notam1 || '<span style="color:#aaa">-</span>') + '</td>';
+    // Kolumn för NOTAM 2
+    html += '<td class="col-notam has-note" data-note="' + escapeHtml(allNotamsText) + '">' + (notam2 || '<span style="color:#aaa">-</span>') + '</td>';
+    
     html += '</tr>';
   });
 
@@ -150,7 +141,7 @@ function handleDeleteSheet() {
     return;
   }
 
-  if (!confirm("⚠️ VARNING: Är du säker på att du vill ta bort fliken \"" + db.activeSheet + "\"?")) return;
+  if (!confirm("⚠️ Är du säker på att du vill ta bort fliken \"" + db.activeSheet + "\"?")) return;
 
   delete db.sheets[db.activeSheet];
   const remainingSheets = getAllSheets();
@@ -207,7 +198,7 @@ async function handleUpdateWeather() {
   const icaos = db.sheets[db.activeSheet].icaos;
   if (!icaos || icaos.length === 0) return;
 
-  showStatus('Hämtar avancerad METAR & TAF...', 'loading');
+  showStatus('Hämtar METAR & TAF...', 'loading');
 
   try {
     const icaoStr = icaos.join(',');
@@ -251,11 +242,12 @@ async function handleUpdateNotams() {
   const icaos = db.sheets[db.activeSheet].icaos;
   if (!icaos || icaos.length === 0) return;
 
-  showStatus('Hämtar och filtrerar NOTAMs...', 'loading');
+  showStatus('Hämtar NOTAMs...', 'loading');
 
   try {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' UTC';
-    const FILTER_KEYWORDS = ["HOURS OF SERVICE", "OPR HR", "OPERATING HOURS", "PPR", "AD CLSD"];
+    // Exakta sökord från ditt gamla script (notam.txt)
+    const FILTER_KEYWORDS = ["HOURS OF SERVICE", "OPR HR", "OPERATING HOURS"];
 
     for (const icao of icaos) {
       const targetUrl = `https://notams.aim.faa.gov/notamSearch/search?locationGroup=${icao}&format=json`;
@@ -275,22 +267,21 @@ async function handleUpdateNotams() {
           
           list.forEach(n => {
             const msg = n.icaoMessage || n.traditionalMessage || n.text || JSON.stringify(n);
-            const simplified = `[Hämtad ${timestamp}]\n` + msg;
-            allNotams.push(simplified);
+            allNotams.push(msg);
 
             const upper = msg.toUpperCase();
             const matches = FILTER_KEYWORDS.some(kw => upper.includes(kw));
             if (matches) {
-              filteredNotams.push(simplified);
+              filteredNotams.push(msg);
             }
           });
         } catch (e) {
-          console.error("Fel vid tolkning av NOTAM för " + icao, e);
+          console.error("Fel vid tolkning", e);
         }
       }
 
       db.notamCache[icao] = {
-        allNotamsSummary: allNotams.length > 0 ? "--- ALLA AKTIVA NOTAM FÖR " + icao + " ---\n\n" + allNotams.join("\n\n--------------------\n\n") : "Inga aktiva NOTAMs för " + icao,
+        allNotamsSummary: allNotams.length > 0 ? allNotams.join("\n\n--------------------\n\n") : "Inga aktiva NOTAMs",
         filteredNotams: filteredNotams
       };
     }
@@ -303,24 +294,24 @@ async function handleUpdateNotams() {
   }
 }
 
-// Avancerad färgkodning för METAR/TAF (Sikt, Moln, TS, CB, FG, RVR)
+// Exakt färgkodningslogg från din color_metar_taf.txt
 function formatRichWeather(text, isTaf) {
   if (!text) return '';
 
   let html = escapeHtml(text);
 
-  // Markera TS, CB, FG, CAVOK med färger
-  html = html.replace(/\b(TS|CB|TCU)\b/g, '<span style="color:#ff9900; font-weight:bold;">$1</span>');
-  html = html.replace(/\bFG\b/g, '<span style="color:#ff9900; font-weight:bold;">FG</span>');
-  html = html.replace(/\bCAVOK\b/g, '<span style="color:#00ff00; font-weight:bold;">CAVOK</span>');
+  // Färgmarkeringar för väderfenomen
+  html = html.replace(/\b(TS|CB|TCU)\b/g, '<span style="color:#ff4444; font-weight:bold;">$1</span>');
+  html = html.replace(/\b(FG|RA|SN)\b/g, '<span style="color:#ffaa00; font-weight:bold;">$1</span>');
+  html = html.replace(/\bCAVOK\b/g, '<span style="color:#00cc00; font-weight:bold;">CAVOK</span>');
 
-  // Molnhöjdsfärgkodning (BKN/OVC 001-003 röd, 004-008 orange, 009-024 gul, 025+ grön)
+  // Molnhöjdsfärgkodning (BKN/OVC regler)
   html = html.replace(/\b(OVC|BKN)(\d{3})\b/g, function(match, type, heightStr) {
     const h = parseInt(heightStr, 10);
-    let color = '#00ff00';
-    if (h >= 1 && h <= 3) color = '#ff0000';
-    else if (h >= 4 && h <= 8) color = '#ff9900';
-    else if (h >= 9 && h <= 24) color = '#EAB308';
+    let color = '#00cc00'; // Grön > 2500ft
+    if (h >= 1 && h <= 3) color = '#ff4444';       // Röd < 300ft
+    else if (h >= 4 && h <= 8) color = '#ffaa00';  // Orange 400-800ft
+    else if (h >= 9 && h <= 24) color = '#cccc00'; // Gul 900-2400ft
     return `<span style="color:${color}; font-weight:bold;">${match}</span>`;
   });
 
