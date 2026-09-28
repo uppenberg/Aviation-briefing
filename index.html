@@ -229,31 +229,36 @@
 
     // Hjälpfunktion för API-anrop till Apps Script backend
 function callBackend(action, payload, successCallback, failureCallback) {
-  const bodyData = { action: action, ...payload };
+  // Bygg query-parametrar för GET-anrop
+  var queryParams = "?action=" + encodeURIComponent(action);
+  if (payload) {
+    for (var key in payload) {
+      if (payload.hasOwnProperty(key) && payload[key] !== undefined && payload[key] !== null) {
+        queryParams += "&" + encodeURIComponent(key) + "=" + encodeURIComponent(payload[key]);
+      }
+    }
+  }
 
-  fetch(GAS_WEB_APP_URL, {
-    method: 'POST',
-    mode: 'cors',
-    redirect: 'follow', // Tvingar fetch att följa Googles redirects
-    headers: { 
-      'Content-Type': 'text/plain;charset=utf-8' // Undviker CORS preflight-spärrar
-    },
-    body: JSON.stringify(bodyData)
+  var fullUrl = GAS_WEB_APP_URL + queryParams;
+
+  fetch(fullUrl, {
+    method: 'GET',
+    redirect: 'follow'
   })
-  .then(response => {
+  .then(function(response) {
     if (!response.ok) {
       throw new Error('Nätverkssvar inte OK (' + response.status + ')');
     }
     return response.json();
   })
-  .then(data => {
+  .then(function(data) {
     if (data.status === 'error') {
       if (failureCallback) failureCallback({ message: data.message });
     } else {
       if (successCallback) successCallback(data.result);
     }
   })
-  .catch(err => {
+  .catch(function(err) {
     console.error('Backend fetch-fel:', err);
     if (failureCallback) failureCallback(err);
   });
