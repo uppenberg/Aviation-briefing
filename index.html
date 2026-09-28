@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Aviation Weather & NOTAM</title>
+  <title>Aviation Briefing PWA</title>
   
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#0056b3">
@@ -46,15 +46,7 @@
       font-size: 12px;
     }
     select { background-color: #ffffff; font-weight: bold; }
-    .time-input { width: 75px; }
-    
-    input.is-now {
-      color: #555555;
-      font-style: italic;
-      font-weight: bold;
-      background-color: #e0e0e0;
-      border-color: #b0b0b0;
-    }
+    .time-input { width: 140px; }
 
     .icao-input { width: 75px; text-transform: uppercase; }
 
@@ -117,7 +109,7 @@
       white-space: nowrap;
       cursor: pointer;
     }
-    .col-metar { width: 38%; line-height: 1.25; }
+    .col-metar { width: 36%; line-height: 1.25; }
     .col-taf { width: 44%; line-height: 1.25; }
     .col-notam { width: auto; }
 
@@ -133,16 +125,17 @@
       cursor: pointer;
     }
 
+    /* Verktygstyp / Tooltip för anteckningar */
     .has-note {
       background-color: #f0f0f0 !important;
-      border-left: 3px solid #888888 !important;
+      border-left: 3px solid #0056b3 !important;
     }
-    .has-note:hover::after {
+    .has-note:hover::after, .has-note:focus::after {
       content: attr(data-note);
       position: absolute;
       left: 0;
       top: 100%;
-      z-index: 100;
+      z-index: 1000;
       background: #222222;
       color: #ffffff;
       padding: 8px;
@@ -152,45 +145,47 @@
       font-family: monospace;
       font-size: 11px;
       min-width: 260px;
-      max-width: 320px;
+      max-width: 340px;
     }
 
     .notam-badge {
       display: inline-block;
       background-color: #e3f2fd;
       color: #0d47a1;
-      padding: 2px 5px;
-      border-radius: 3px;
-      font-size: 10px;
-      margin: 1px 2px 1px 0;
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      margin: 2px 2px 2px 0;
       font-family: sans-serif;
       font-weight: bold;
+      cursor: pointer;
+      border: 1px solid #90caf9;
     }
   </style>
 </head>
 <body>
 
-  <!-- FLIKVÄLJARE & RADERA FLIK -->
+  <!-- FLIKVÄLJARE & HANTERING -->
   <div class="panel">
-    <div class="panel-title">Välj, skapa eller radera flik</div>
+    <div class="panel-title">Välj eller hantera flik</div>
     <div class="flex-row">
-      <label>Aktiv Flik: 
+      <label>Flik: 
         <select id="sheetSelector" onchange="handleSheetChange()">
           <option>Laddar flikar...</option>
         </select>
       </label>
-      <input type="text" id="newSheetName" placeholder="Ny Fliknamn..." style="width: 100px;">
+      <input type="text" id="newSheetName" placeholder="Ny Fliknamn..." style="width: 110px;">
       <button onclick="handleCreateSheet()">+ Skapa</button>
       <button class="danger" onclick="handleDeleteSheet()" title="Ta bort aktiv flik">🗑️ Ta bort</button>
     </div>
   </div>
 
-  <!-- FLYGTIDER & KONTROLLER -->
+  <!-- FLYGTIDER & OPPDATERA -->
   <div class="panel">
-    <div class="panel-title">Flight Planning & Controls</div>
+    <div class="panel-title">Flight Planning & Briefing Controls</div>
     <div class="flex-row">
-      <label>DEP: <input type="text" id="depTime" class="time-input" placeholder="NOW"></label>
-      <label>ARR: <input type="text" id="arrTime" class="time-input" placeholder="NOW"></label>
+      <label>DEP: <input type="text" id="depTime" class="time-input" placeholder="Ej angiven (använder nu)"></label>
+      <label>ARR: <input type="text" id="arrTime" class="time-input" placeholder="Ej angiven (använder nu)"></label>
       <button onclick="handleSaveTimes()">Spara tider</button>
       <button class="secondary" onclick="handleUpdateWeather()">🔄 METAR/TAF</button>
       <button class="secondary" onclick="handleUpdateNotams()">📋 NOTAM</button>
@@ -319,8 +314,8 @@
         }
       }
 
-      setupTimeInput('depTime', res.depTime);
-      setupTimeInput('arrTime', res.arrTime);
+      document.getElementById('depTime').value = res.depTime || "";
+      document.getElementById('arrTime').value = res.arrTime || "";
 
       var data = res.rows;
       if (!data || data.length === 0) {
@@ -346,8 +341,11 @@
         var notamCellHtml = "";
         if (row.filteredNotams && row.filteredNotams.length > 0) {
           for (var n = 0; n < row.filteredNotams.length; n++) {
-            var notamText = row.filteredNotams[n];
-            notamCellHtml += '<div class="has-note notam-badge" data-note="' + escapeHtml(notamText) + '">📌 ' + (n + 1) + '</div>';
+            var item = row.filteredNotams[n];
+            var notamText = (typeof item === 'object') ? item.text : item;
+            var notamNote = (typeof item === 'object') ? (item.note || item.text) : item;
+
+            notamCellHtml += '<div class="has-note notam-badge" tabindex="0" data-note="' + escapeHtml(notamNote) + '">📌 ' + (n + 1) + '</div>';
           }
         } else {
           notamCellHtml = '<span style="color: #aaa;">-</span>';
@@ -404,31 +402,6 @@
       });
     }
 
-    function setupTimeInput(id, value) {
-      var input = document.getElementById(id);
-      input.value = value || "NOW";
-
-      if (input.value.toUpperCase() === "NOW") {
-        input.classList.add("is-now");
-      } else {
-        input.classList.remove("is-now");
-      }
-
-      input.onfocus = function() {
-        if (this.value.toUpperCase() === "NOW") {
-          this.value = "";
-          this.classList.remove("is-now");
-        }
-      };
-
-      input.onblur = function() {
-        if (this.value.trim() === "") {
-          this.value = "NOW";
-          this.classList.add("is-now");
-        }
-      };
-    }
-
     function handleSheetChange() {
       var selected = document.getElementById('sheetSelector').value;
       loadData(selected);
@@ -454,12 +427,9 @@
       var depInput = document.getElementById('depTime').value.trim();
       var arrInput = document.getElementById('arrTime').value.trim();
 
-      var dep = depInput.toUpperCase() === "NOW" ? "" : depInput;
-      var arr = arrInput.toUpperCase() === "NOW" ? "" : arrInput;
-
       showStatus('Sparar tider för ' + currentActiveSheet + '...', 'loading');
 
-      callBackend('updateFlightTimes', { sheetName: currentActiveSheet, depTime: dep, arrTime: arr }, function() {
+      callBackend('updateFlightTimes', { sheetName: currentActiveSheet, depTime: depInput, arrTime: arrInput }, function() {
         showStatus('✔ Flight times sparade!', 'green');
         loadData(currentActiveSheet);
       }, function(err) {
@@ -515,7 +485,8 @@
     }
 
     function escapeHtml(text) {
-      return text.replace(/"/g, '&quot;');
+      if (!text) return '';
+      return text.toString().replace(/"/g, '&quot;');
     }
 
     function showError(error) {
