@@ -212,6 +212,7 @@
   <script>
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyxONYxCTlL4VQXCZ5udE6slFl9ASSeP4AYK1zBgljRv7QdAYkPxJcswkIUtAMWbX6P/exec";
     var currentActiveSheet = "";
+    var allSheetsData = null; // Håller hela kalkylbladets flikar i minnet
 
     // Registrera Service Worker för PWA
     if ('serviceWorker' in navigator) {
@@ -226,7 +227,7 @@
       loadData();
     };
 
-    // GET-baserad kommunikation för att förhindra CORS-blockeringar
+    // GET-baserad kommunikation
     function callBackend(action, payload, successCallback, failureCallback) {
       var queryParams = "?action=" + encodeURIComponent(action);
       if (payload) {
@@ -263,55 +264,51 @@
     }
 
     function loadData(targetSheet) {
-      // 1. Om inget fliknamn angivits, försök kom ihåg senast valda flik från localStorage
-      if (!targetSheet && !currentActiveSheet) {
-        var lastCacheRaw = localStorage.getItem('aviation_last_cache');
-        if (lastCacheRaw) {
-          try {
-            var parsedLast = JSON.parse(lastCacheRaw);
-            if (parsedLast && parsedLast.sheetName) {
-              currentActiveSheet = parsedLast.sheetName;
-            }
-          } catch(e) {}
-        }
-      }
-
       if (targetSheet) currentActiveSheet = targetSheet;
 
-      // 2. Om vi redan vet att vi är helt offline vid start, ladda cachen direkt
+      // Om vi är offline: läs direkt från den kompletta cachen
       if (!navigator.onLine) {
         showError({ message: "Offline" });
         return;
       }
 
       document.getElementById('content').className = 'loading';
-      document.getElementById('content').innerHTML = 'Hämtar data...';
+      document.getElementById('content').innerHTML = 'Hämtar all flikdata...';
 
-      callBackend('getDataFromSheet', { sheetName: currentActiveSheet }, showData, showError);
+      // Hämtar hela paketet för alla flikar i ett anrop
+      callBackend('getDataFromSheet', { sheetName: currentActiveSheet }, function(result) {
+        processAndCacheAllData(result);
+      }, showError);
     }
 
-    function showData(res) {
+    function processAndCacheAllData(res) {
       if (!res) return;
 
-      currentActiveSheet = res.activeSheet || currentActiveSheet;
-
-      // Sparar BÅDE flikspecifik och fall-back "senaste"-cache i localStorage
+      // Spara tidsstämpel och hela datapaketet i localStorage
       try {
-        var cacheObject = {
-          sheetName: currentActiveSheet,
+        var cacheBundle = {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          activeSheet: res.activeSheet || currentActiveSheet,
           data: res
         };
-        if (currentActiveSheet) {
-          localStorage.setItem('aviation_weather_cache_' + currentActiveSheet, JSON.stringify(cacheObject));
-        }
-        localStorage.setItem('aviation_last_cache', JSON.stringify(cacheObject));
+        localStorage.setItem('aviation_full_bundle', JSON.stringify(cacheBundle));
       } catch (e) {
-        console.log('Kunde inte spara cachen:', e);
+        console.log('Kunde inte spara bundle i localStorage:', e);
       }
 
+      allSheetsData = res;
+      currentActiveSheet = res.activeSheet || currentActiveSheet || (res.sheets ? res.sheets[0] : "");
+
+      renderCurrentSheet();
+    }
+
+    function renderCurrentSheet() {
+      if (!allSheetsData) return;
+
+      var res = allSheetsData;
       document.getElementById('status').innerHTML = '';
 
+      // Uppdatera flikväljaren med alla tillgängliga flikar
       var selector = document.getElementById('sheetSelector');
       selector.innerHTML = '';
       if (res.sheets && res.sheets.length > 0) {
@@ -324,12 +321,16 @@
         }
       }
 
-      setupTimeInput('depTime', res.depTime);
-      setupTimeInput('arrTime', res.arrTime);
+      // Hämta specifikt data för den valda fliken ur allSheetsData-objektet
+      var sheetContent = (res.sheetsData && res.sheetsData[currentActiveSheet]) ? res.sheetsData[currentActiveSheet] : res;
 
-      var data = res.rows;
+      setupTimeInput('depTime', sheetContent.depTime);
+      setupTimeInput('arrTime', sheetContent.arrTime);
+
+      var data = sheetContent.rows;
       if (!data || data.length === 0) {
         document.getElementById('content').innerHTML = 'Inga flygplatser hittades i fliken "' + currentActiveSheet + '".';
+        document.getElementById('content').classList.remove('loading');
         return;
       }
 
@@ -436,7 +437,14 @@
 
     function handleSheetChange() {
       var selected = document.getElementById('sheetSelector').value;
-      loadData(selected);
+      currentActiveSheet = selected;
+
+      // Om vi har hela paketet i minnet eller localStorage kan vi växla direkt utan nätverk
+      if (allSheetsData) {
+        renderCurrentSheet();
+      } else {
+        loadData(selected);
+      }
     }
 
     function handleCreateSheet() {
@@ -524,22 +532,22 @@
     }
 
     function showError(error) {
-      // 1. Sök i sista hand efter den globala "senaste"-cachen
-      var cachedRaw = localStorage.getItem('aviation_last_cache');
-      
-      // 2. Sök annars efter flikspecifik cache om fliknamn finns
-      if (!cachedRaw && currentActiveSheet) {
-        cachedRaw = localStorage.getItem('aviation_weather_cache_' + currentActiveSheet);
-      }
+      // Hämta det sparade paketet med ALLA flikar
+      var bundleRaw = localStorage.getItem('aviation_full_bundle');
 
-      if (cachedRaw) {
+      if (bundleRaw) {
         try {
-          var cached = JSON.parse(cachedRaw);
-          showStatus('⚠️ Offline – Visar sparad brief från ' + cached.timestamp + ' (' + (cached.sheetName || 'Sparad flik') + ')', 'red');
-          showData(cached.data);
+          var bundle = JSON.parse(bundleRaw);
+          allSheetsData = bundle.data;
+          if (!currentActiveSheet) {
+            currentActiveSheet = bundle.activeSheet || (allSheetsData.sheets ? allSheetsData.sheets[0] : "");
+          }
+          
+          showStatus('⚠️ Offline – Visar sparad brief från ' + bundle.timestamp + ' (Alla flikar tillgängliga)', 'red');
+          renderCurrentSheet();
           return;
         } catch (e) {
-          console.error("Kunde inte läsa cachen:", e);
+          console.error("Kunde inte läsa bundle-cachen:", e);
         }
       }
       
