@@ -48,6 +48,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .button-primary:hover { border-color: #78d4bd; background: #21534e; }
 .refresh-all { justify-self: end; }
 .topbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.button-label-short { display: none; }
 .nearby-button.active { border-color: #477b70; background: #17352f; color: #a9e4d4; }
 .nearby-message { grid-column: 1 / -1; margin: 10px 0; color: #91a2ab; font-size: 13px; }
 .nearby-distance { margin: 4px 0 0; color: #8b9ba4; font: 10px var(--mono); }
@@ -102,6 +103,16 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .airport-ident { min-width: 0; flex: 1; }
 .airport-code { margin: 0; font: 600 21px var(--display); letter-spacing: .04em; }
 .alternate-badge { display: inline-block; margin-left: 6px; padding: 3px 5px; border: 1px solid #37557d; border-radius: 4px; background: #162c49; color: #a9c9ff; font: 500 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; }
+.notam-badge { display: inline-block; margin-left: 6px; padding: 3px 5px; border: 1px solid #5a4d35; border-radius: 4px; background: rgba(185, 133, 58, .16); color: #edca88; font: 500 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; cursor: pointer; }
+.notam-badge:hover { border-color: #9b7a43; background: rgba(185, 133, 58, .25); }
+.notam-overlay { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 20px; background: #03090dcc; backdrop-filter: blur(3px); }
+.notam-overlay[hidden] { display: none; }
+.notam-panel { width: min(100%, 620px); max-height: calc(100vh - 40px); overflow-y: auto; padding: 22px; border: 1px solid #3a4c57; border-radius: 10px; background: #14202a; box-shadow: 0 24px 80px #0009; }
+.notam-panel .settings-header { margin-bottom: 16px; }
+.notam-content { display: grid; gap: 10px; }
+.notam-entry { padding: 12px; border: 1px solid #2e404b; border-radius: 7px; background: #172630; }
+.notam-entry h3 { margin: 0 0 7px; color: #eacb8d; font: 500 10px var(--mono); }
+.notam-entry p, .notam-content > p { margin: 0; color: #d7e1e4; font: 11px/1.65 var(--mono); white-space: pre-line; overflow-wrap: anywhere; }
 .card-actions { display: flex; align-items: center; gap: 7px; }
 .group-membership { position: static; color: #b7c3c9; font-size: 10px; }
 .group-membership summary { padding: 7px 8px; border: 1px solid #354854; border-radius: 5px; background: #142029; cursor: pointer; white-space: nowrap; }
@@ -211,7 +222,10 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
   .brand small { font-size: 8px; }
   .sidebar-tab { grid-column: 1; }
   .topbar-actions { grid-column: 1 / -1; grid-row: 3; justify-content: stretch; }
-  .topbar-actions .button { flex: 1; justify-self: stretch; padding: 0 8px; }
+  .topbar-actions { gap: 6px; }
+  .topbar-actions .button { min-width: 0; flex: 1 1 0; justify-self: stretch; padding: 0 5px; font-size: 10px; }
+  .button-label-full { display: none; }
+  .button-label-short { display: inline; }
   .search-wrap { grid-row: 2; }
   .content-area { min-height: calc(100vh - 220px); padding: 28px 14px 40px; }
   .flight-times { padding: 10px 14px; }

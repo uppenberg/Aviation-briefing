@@ -10,6 +10,8 @@ const DEFAULT_NEARBY_RADIUS_NM = 100;
 let airportCsvPromise = null;
 let runwayCsvPromise = null;
 let navaidCsvPromise = null;
+let notamRequestQueue = Promise.resolve();
+let lastNotamRequestAt = 0;
 const state = {
   airports: [],
   groups: [],
@@ -74,9 +76,16 @@ function init() {
     input.click();
   });
   document.getElementById('import-saved-inputs-file').addEventListener('change', importSavedInputs);
+  document.getElementById('close-notam').addEventListener('click', closeNotamPanel);
+  document.getElementById('notam-overlay').addEventListener('click', event => {
+    if (event.target.id === 'notam-overlay') closeNotamPanel();
+  });
   document.getElementById('nearby-radius').addEventListener('click', event => event.currentTarget.select());
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') closeSettings();
+    if (event.key === 'Escape') {
+      closeSettings();
+      closeNotamPanel();
+    }
   });
   document.getElementById('create-group').addEventListener('click', createGroupFromSelection);
   document.getElementById('open-sidebar').addEventListener('click', () => setSidebar(!state.sidebarOpen));
@@ -113,7 +122,8 @@ function loadState() {
       .map(item => ({
         icao: item.icao,
         ...(isCachedReport(item.metar) ? { metar: restoreCachedReport(item.metar) } : {}),
-        ...(isCachedReport(item.taf) ? { taf: restoreCachedReport(item.taf) } : {})
+        ...(isCachedReport(item.taf) ? { taf: restoreCachedReport(item.taf) } : {}),
+        ...(isCachedNotams(item.notams) ? { notams: item.notams } : {})
       })) : [];
     state.groups = Array.isArray(saved.groups) ? saved.groups.filter(group => group && typeof group.id === 'string' && typeof group.name === 'string') : [];
     state.groups.forEach(group => { group.airports = Array.isArray(group.airports) ? [...new Set(group.airports.filter(icao => state.airports.some(item => item.icao === icao)))] : []; });
@@ -134,10 +144,11 @@ function loadState() {
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    airports: state.airports.map(({ icao, metar, taf }) => ({
+    airports: state.airports.map(({ icao, metar, taf, notams }) => ({
       icao,
       ...(isCachedReport(metar) ? { metar: serializeCachedReport(metar) } : {}),
-      ...(isCachedReport(taf) ? { taf: serializeCachedReport(taf) } : {})
+      ...(isCachedReport(taf) ? { taf: serializeCachedReport(taf) } : {}),
+      ...(isCachedNotams(notams) ? { notams } : {})
     })),
     groups: state.groups,
     activeGroup: state.activeGroup,
@@ -156,6 +167,10 @@ function saveState() {
 
 function isCachedReport(report) {
   return report && typeof report.raw === 'string' && report.raw.trim().length > 0;
+}
+
+function isCachedNotams(notams) {
+  return notams && Array.isArray(notams.allNotams) && Array.isArray(notams.filteredNotams);
 }
 
 function ensureAirportGroupMembership() {
@@ -447,7 +462,7 @@ function formatWeatherMarkup(raw, product = 'metar') {
 }
 
 function formatTafForFlightWindow(raw) {
-  const info = getFlightWindow();
+  const info = getPossibleAlternateWindow();
   const slices = getTafWindowSlices(raw, info);
   if (!slices.length) return formatWeatherMarkup(raw, 'taf');
   const ranges = slices.filter(slice => slice.highlight).map(slice => ({ start: slice.start, end: slice.end }));
@@ -593,6 +608,9 @@ function renderCards() {
       ? '<p class="nearby-message">No nearby airports meet your planning minima at the selected time.</p>'
       : '<p class="nearby-message">Enter a destination ICAO and search, or choose Use my location to search from GPS.</p>';
   }
+  grid.querySelectorAll('[data-notam-airport]').forEach(button => button.addEventListener('click', () => {
+    openNotamPanel(button.dataset.notamAirport, button.dataset.notamType);
+  }));
   document.getElementById('nearby-taf').classList.toggle('active', state.nearbyMode);
   document.getElementById('nearby-taf').title = `Find possible alternates within ${state.nearbyRadiusNm} NM`;
   document.getElementById('nearby-destination-form').hidden = !state.nearbyMode;
@@ -704,6 +722,7 @@ async function findNearbyTafAirports(options = {}) {
                 ...airport,
                 taf: report,
                 metar,
+                notams: state.airports.find(item => item.icao === airport.icao)?.notams,
                 runways: runwayResult.status === 'fulfilled' ? runwayResult.value : [],
                 magneticVariation: variationResult.status === 'fulfilled' ? variationResult.value : null
               });
@@ -775,13 +794,17 @@ function renderCard(airport, nearby = false) {
   const loading = state.busy.has(airport.icao);
   const metarText = metar.raw || (loading ? 'Loading current observation…' : metar.error || 'No METAR available.');
   const tafText = taf.raw || (loading ? 'Loading forecast…' : taf.error || 'No TAF available.');
+  const notams = isCachedNotams(airport.notams) ? airport.notams : null;
+  const notamActions = notams?.allNotams.length
+    ? `${renderNotamButton(airport.icao, 'notam', `NOTAM ${notams.allNotams.length}`)}${notams.filteredNotams.length ? renderNotamButton(airport.icao, 'hours', `OP HRS ${notams.filteredNotams.length}`) : ''}`
+    : '';
   const alternateBadge = nearby || isPossibleAlternate(airport) ? ' <span class="alternate-badge">[Possible alternate]</span>' : '';
   const cardActions = nearby
     ? `<button class="button nearby-add" type="button" data-add-nearby="${airport.icao}" ${state.airports.some(item => item.icao === airport.icao) ? 'disabled' : ''}>${state.airports.some(item => item.icao === airport.icao) ? 'Added' : '＋ Add to briefing'}</button>`
     : `${renderGroupMembership(airport.icao)}<button class="icon-button" data-remove="${airport.icao}" title="Remove ${airport.icao}" aria-label="Remove ${airport.icao}">×</button>`;
   const cardIdentification = nearby
-    ? `<div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}</h2><p class="nearby-distance">${airport.distance.toFixed(1)} NM away</p></div>`
-    : `<input class="card-select" type="checkbox" data-select="${airport.icao}" aria-label="Select ${airport.icao}" ${state.selected.has(airport.icao) ? 'checked' : ''}><div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}</h2></div>`;
+    ? `<div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}${notamActions}</h2><p class="nearby-distance">${airport.distance.toFixed(1)} NM away</p></div>`
+    : `<input class="card-select" type="checkbox" data-select="${airport.icao}" aria-label="Select ${airport.icao}" ${state.selected.has(airport.icao) ? 'checked' : ''}><div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}${notamActions}</h2></div>`;
   return `<article class="airport-card" data-airport="${airport.icao}">
     <header class="card-head">
       ${nearby ? '' : `<button class="drag-handle" type="button" draggable="true" aria-label="Drag to move ${airport.icao}" title="Drag to reorder">⠿</button>`}
@@ -798,6 +821,42 @@ function renderCard(airport, nearby = false) {
       ${renderAlternateAssessment(airport)}
     </section>
   </article>`;
+}
+
+function renderNotamButton(icao, type, label) {
+  return ` <button class="notam-badge" type="button" data-notam-airport="${icao}" data-notam-type="${type}">${label}</button>`;
+}
+
+function openNotamPanel(icao, type) {
+  const airport = state.airports.find(item => item.icao === icao) || state.nearbyResults.find(item => item.icao === icao);
+  const notams = airport && isCachedNotams(airport.notams) ? airport.notams : null;
+  if (!notams) return;
+  const isHours = type === 'hours';
+  const items = isHours ? notams.filteredNotams : notams.allNotams;
+  document.getElementById('notam-title').textContent = `${icao} · ${isHours ? 'OP HRS' : 'NOTAM'}`;
+  const content = document.getElementById('notam-content');
+  content.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement('p');
+    empty.textContent = isHours ? 'No operating-hours NOTAMs found.' : 'No active NOTAMs found.';
+    content.append(empty);
+  } else {
+    items.forEach((item, index) => {
+      const article = document.createElement('article');
+      article.className = 'notam-entry';
+      const heading = document.createElement('h3');
+      heading.textContent = `${isHours ? 'OP HRS' : `NOTAM ${index + 1}`}`;
+      const text = document.createElement('p');
+      text.textContent = item;
+      article.append(heading, text);
+      content.append(article);
+    });
+  }
+  document.getElementById('notam-overlay').hidden = false;
+}
+
+function closeNotamPanel() {
+  document.getElementById('notam-overlay').hidden = true;
 }
 
 function renderGroupMembership(icao) {
@@ -824,7 +883,7 @@ function getWeatherConditionColors(raw, product) {
   const neutral = '#43515a';
   let relevantText = raw;
   if (product === 'taf') {
-    const slices = getTafWindowSlices(raw, getFlightWindow());
+    const slices = getTafWindowSlices(raw, getPossibleAlternateWindow());
     if (slices.length) {
       const selected = slices.filter(slice => slice.highlight);
       if (selected.length) relevantText = selected.map(slice => raw.slice(slice.start, slice.end)).join(' ');
@@ -885,9 +944,10 @@ async function refreshAirport(icao) {
   state.busy.add(icao);
   renderCards();
   try {
-    const [metarResult, tafResult, runwayResult] = await Promise.allSettled([
+    const [metarResult, tafResult, notamResult, runwayResult] = await Promise.allSettled([
       fetchWorkerWeather(icao, 'metar'),
       fetchWorkerWeather(icao, 'taf'),
+      fetchWorkerNotams(icao),
       Promise.allSettled([fetchOurAirportsRunways(icao), fetchOurAirportsVariation(icao)])
     ]);
     const airport = state.airports.find(item => item.icao === icao);
@@ -907,7 +967,8 @@ async function refreshAirport(icao) {
     };
     const metarUpdated = updateReport('metar', metarResult);
     const tafUpdated = updateReport('taf', tafResult);
-    if (metarUpdated || tafUpdated) saveState();
+    if (notamResult.status === 'fulfilled') airport.notams = { ...notamResult.value, retrievedAt: Date.now() };
+    if (metarUpdated || tafUpdated || notamResult.status === 'fulfilled') saveState();
     const runwayData = runwayResult.status === 'fulfilled' ? runwayResult.value[0] : null;
     const variationData = runwayResult.status === 'fulfilled' ? runwayResult.value[1] : null;
     airport.runways = runwayData?.status === 'fulfilled' ? runwayData.value : [];
@@ -1337,6 +1398,35 @@ async function fetchWorkerWeather(icao, product) {
     throw new Error(`Worker returned no ${product.toUpperCase()} for ${icao}${preview ? ` (response: ${preview})` : ' (empty response)'}. Check that the TAF route is deployed.`);
   }
   return { raw: body, time: product === 'metar' ? timestampFromMetar(body) : timestampFromTaf(body) };
+}
+
+function fetchWorkerNotams(icao) {
+  const request = notamRequestQueue.then(async () => {
+    const delay = Math.max(0, 1200 - (Date.now() - lastNotamRequestAt));
+    if (lastNotamRequestAt && delay) await new Promise(resolve => setTimeout(resolve, delay));
+    lastNotamRequestAt = Date.now();
+    return fetchWorkerNotamsNow(icao);
+  });
+  notamRequestQueue = request.catch(() => {});
+  return request;
+}
+
+async function fetchWorkerNotamsNow(icao) {
+  const url = new URL(WEATHER_WORKER_URL);
+  url.searchParams.set('icao', icao);
+  url.searchParams.set('product', 'notam');
+  const response = await fetch(url.toString());
+  const body = await response.text();
+  if (!response.ok) throw new Error(`NOTAM proxy returned HTTP ${response.status}`);
+  let data;
+  try { data = JSON.parse(body); } catch { throw new Error('NOTAM proxy did not return JSON.'); }
+  if (!Array.isArray(data?.allNotams) || !Array.isArray(data?.filteredNotams)) {
+    throw new Error('NOTAM proxy response is missing allNotams or filteredNotams.');
+  }
+  return {
+    allNotams: data.allNotams.filter(item => typeof item === 'string'),
+    filteredNotams: data.filteredNotams.filter(item => typeof item === 'string')
+  };
 }
 
 function timestampFromMetar(raw) {
