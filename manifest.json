@@ -1,1 +1,21 @@
-
+{
+  "id": "./",
+  "name": "Aviation Briefing",
+  "short_name": "Briefing",
+  "description": "Personlig flygväderbriefing med METAR och TAF per flygplats.",
+  "lang": "sv-SE",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#101820",
+  "theme_color": "#101820",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -21,6 +21,11 @@ const state = {
 document.addEventListener('DOMContentLoaded', init);
 
 function init() {
+  if (window.isSecureContext && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(error => {
+      console.warn('Kunde inte registrera service worker:', error);
+    });
+  }
   loadState();
   document.getElementById('dep-time').value = state.departureTime;
   document.getElementById('arr-time').value = state.arrivalTime;
