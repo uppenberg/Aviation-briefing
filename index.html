@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#101820">
-  <meta name="description" content="Personlig flygväderbriefing med METAR och TAF per flygplats.">
+  <meta name="description" content="Personal aviation weather briefing with METAR and TAF for each airport.">
   <title>Aviation Briefing</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -12,68 +12,105 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar" id="sidebar" aria-label="Flygplatsgrupper" aria-hidden="true">
+    <aside class="sidebar" id="sidebar" aria-label="Airport groups" aria-hidden="true">
       <div class="sidebar-header">
         <div>
-          <p class="eyebrow">SAMLADE KORT</p>
-          <h2>Grupper</h2>
+          <p class="eyebrow">SAVED CARDS</p>
+          <h2>Groups</h2>
         </div>
-        <button class="icon-button close-sidebar" id="close-sidebar" aria-label="Stäng grupper">×</button>
+        <button class="icon-button close-sidebar" id="close-sidebar" aria-label="Close groups">×</button>
       </div>
-      <p class="sidebar-hint">Markera flygplatskort och skapa en grupp av urvalet.</p>
-      <button class="button button-primary create-group" id="create-group">＋ Skapa grupp från valda</button>
-      <nav class="group-list" id="group-list" aria-label="Grupper"></nav>
-      <div class="sidebar-footer"><span class="selection-count" id="selection-count">0 kort markerade</span></div>
+      <p class="sidebar-hint">Groups work as tabs. Airports can belong to one or more groups.</p>
+      <button class="button button-primary create-group" id="create-group">＋ Add group</button>
+      <nav class="group-list" id="group-list" role="tablist" aria-label="Airport groups"></nav>
+      <div class="sidebar-footer"><span class="selection-count" id="selection-count">0 cards selected</span></div>
     </aside>
 
     <main class="main-content">
       <header class="topbar">
-        <button class="sidebar-tab" id="open-sidebar" aria-label="Öppna grupper" aria-expanded="false">
-          <span class="tab-icon">▤</span><span>Grupper</span><span class="tab-count" id="group-count">0</span>
+        <button class="sidebar-tab" id="open-sidebar" aria-label="Open groups" aria-expanded="false">
+          <span class="tab-icon">▤</span><span>Groups</span><span class="tab-count" id="group-count">0</span>
         </button>
-        <a class="brand" href="." aria-label="Aviation Briefing startsida">
+        <a class="brand" href="." aria-label="Aviation Briefing home">
           <span class="brand-mark">✈</span><span><strong>AVIATION</strong><small>WEATHER BRIEFING</small></span>
         </a>
         <div class="search-wrap">
           <form id="airport-search" class="search-box" role="search">
             <span class="search-icon" aria-hidden="true">⌕</span>
-            <input id="airport-input" type="search" maxlength="4" autocomplete="off" spellcheck="false" placeholder="Sök flygplats med ICAO, t.ex. ESSA" aria-label="Sök flygplats med ICAO-kod">
+            <input id="airport-input" type="search" maxlength="4" autocomplete="off" spellcheck="false" placeholder="Search airport by ICAO, e.g. ESSA" aria-label="Search airport by ICAO code">
             <kbd>↵</kbd>
           </form>
-          <span class="search-help">Ange en fyrställigt ICAO-kod och tryck Enter</span>
+          <span class="search-help">Enter a four-letter ICAO code and press Enter</span>
         </div>
-        <button class="button refresh-all" id="refresh-all"><span aria-hidden="true">↻</span> Uppdatera alla</button>
+        <div class="topbar-actions">
+          <button class="button nearby-button" id="nearby-taf" type="button" title="Find possible alternates within 100 NM">⌖ Nearby Possible Alternates</button>
+          <button class="button refresh-all" id="refresh-all"><span aria-hidden="true">↻</span> Refresh all</button>
+          <button class="button settings-button" id="open-settings" type="button" aria-label="Open settings" title="Settings">⚙ Settings</button>
+        </div>
       </header>
 
-      <section class="flight-times" aria-label="Flygtider">
-        <span class="flight-times-title">VÄDER FÖR FLYGTID</span>
-        <label>DEP <input id="dep-time" type="time" aria-label="Avgångstid UTC"></label>
-        <label>ARR <input id="arr-time" type="time" aria-label="Ankomsttid UTC"></label>
-        <span class="flight-times-note" id="flight-time-note">TAF visas för vald ankomsttid, annars avgångstid eller nu.</span>
+      <section class="flight-times" aria-label="Flight times">
+        <span class="flight-times-title">WEATHER FOR FLIGHT WINDOW</span>
+        <label>DEP <input id="dep-time" type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" autocomplete="off" aria-label="Departure time UTC"></label>
+        <label>ARR <input id="arr-time" type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" autocomplete="off" aria-label="Arrival time UTC"></label>
+        <button class="button clear-times" id="clear-times" type="button" aria-label="Clear DEP and ARR times" title="Clear both times">× Clear</button>
+        <span class="flight-times-note" id="flight-time-note">TAF is assessed for the selected arrival time, otherwise departure time or now.</span>
       </section>
 
       <section class="content-area">
         <div class="section-heading">
           <div>
-            <p class="eyebrow" id="view-eyebrow">DIN ÖVERSIKT</p>
-            <h1 id="view-title">Flygplatser</h1>
-            <p class="subtitle" id="view-subtitle">Väderläget på dina flygplatser, samlat på ett ställe.</p>
+            <p class="eyebrow" id="view-eyebrow">YOUR OVERVIEW</p>
+            <h1 id="view-title">Airports</h1>
+            <p class="subtitle" id="view-subtitle">Weather at your airports, all in one place.</p>
           </div>
-          <span class="updated-label" id="updated-label">Väderdata hämtas från AviationWeather.gov</span>
+          <span class="updated-label" id="updated-label">Weather data from AviationWeather.gov</span>
         </div>
         <div class="status-message" id="status-message" role="status" aria-live="polite"></div>
-        <div class="airport-grid" id="airport-grid"></div>
+        <form class="nearby-origin-form" id="nearby-destination-form" hidden>
+          <label class="nearby-destination-field" for="nearby-destination">Destination ICAO
+            <input id="nearby-destination" type="text" maxlength="4" autocomplete="off" spellcheck="false" placeholder="e.g. ESSA" aria-label="Destination airport ICAO code">
+          </label>
+          <button class="button button-primary" type="submit">Search from destination</button>
+          <button class="button" id="nearby-use-location" type="button">⌖ Use my location</button>
+        </form>
+        <div class="airport-grid" id="airport-grid" role="tabpanel"></div>
         <section class="empty-state" id="empty-state">
           <div class="empty-icon">⌖</div>
-          <h2>Din briefing börjar här</h2>
-          <p>Sök efter en flygplats med dess ICAO-kod för att lägga till den. METAR och TAF visas sedan i varsitt kort.</p>
-          <button class="button button-primary" id="add-suggested">Lägg till ESSA</button>
+          <h2>Your briefing starts here</h2>
+          <p>Search for an airport by ICAO code to add it. METAR and TAF will appear in separate sections on its card.</p>
+          <button class="button button-primary" id="add-suggested">Add ESSA</button>
         </section>
       </section>
       <footer class="app-footer"><span>METAR &amp; TAF</span><span class="footer-dot">·</span><span>UTC</span><span class="footer-dot">·</span><span>AviationWeather.gov</span></footer>
     </main>
   </div>
   <div class="sidebar-scrim" id="sidebar-scrim"></div>
+  <div class="settings-overlay" id="settings-overlay" hidden>
+    <section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <header class="settings-header">
+        <div><p class="eyebrow">PREFERENCES</p><h2 id="settings-title">Settings</h2></div>
+        <button class="icon-button settings-close" id="close-settings" type="button" aria-label="Close settings">×</button>
+      </header>
+      <form id="settings-form">
+        <fieldset class="settings-section">
+          <legend>Nearby possible alternates</legend>
+          <label class="settings-field" for="nearby-radius">Search radius <span><input id="nearby-radius" type="text" inputmode="numeric" pattern="[0-9]*" required> NM</span></label>
+          <p class="settings-help">Nearby shows airports within this distance whose TAF meets your planning minima for the selected window, or the selected time.</p>
+        </fieldset>
+        <fieldset class="settings-section backup-section">
+          <legend>Backup</legend>
+          <p class="settings-help">Save or restore your airport list, groups, flight times, and Nearby settings.</p>
+          <div class="backup-actions">
+            <button class="button" id="export-saved-inputs" type="button">Export saved inputs</button>
+            <button class="button" id="import-saved-inputs" type="button">Import saved inputs</button>
+            <input id="import-saved-inputs-file" type="file" accept="application/json,.json" hidden>
+          </div>
+        </fieldset>
+        <footer class="settings-footer"><button class="button" id="cancel-settings" type="button">Cancel</button><button class="button button-primary" type="submit">Save settings</button></footer>
+      </form>
+    </section>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>

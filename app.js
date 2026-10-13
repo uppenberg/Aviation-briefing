@@ -4,6 +4,9 @@ const RUNWAY_CACHE_PREFIX = 'aviation-briefing-runways-';
 const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
 const OURAIRPORTS_NAVAIDS_URL = 'https://davidmegginson.github.io/ourairports-data/navaids.csv';
+const OURAIRPORTS_AIRPORTS_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
+const DEFAULT_NEARBY_RADIUS_NM = 100;
+let airportCsvPromise = null;
 let runwayCsvPromise = null;
 let navaidCsvPromise = null;
 const state = {
@@ -15,7 +18,14 @@ const state = {
   selected: new Set(),
   sidebarOpen: false,
   busy: new Set(),
-  expandedWind: new Set()
+  expandedWind: new Set(),
+  nearbyMode: false,
+  nearbyResults: [],
+  nearbyLoading: false,
+  nearbyRadiusNm: DEFAULT_NEARBY_RADIUS_NM,
+  nearbyDestination: '',
+  nearbyOrigin: 'Choose origin',
+  nearbyHasSearched: false
 };
 
 document.addEventListener('DOMContentLoaded', init);
@@ -23,7 +33,7 @@ document.addEventListener('DOMContentLoaded', init);
 function init() {
   if (window.isSecureContext && 'serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(error => {
-      console.warn('Kunde inte registrera service worker:', error);
+      console.warn('Could not register service worker:', error);
     });
   }
   loadState();
@@ -31,18 +41,53 @@ function init() {
   document.getElementById('arr-time').value = state.arrivalTime;
   document.getElementById('airport-search').addEventListener('submit', handleSearch);
   document.getElementById('refresh-all').addEventListener('click', () => refreshAll());
+  document.getElementById('nearby-taf').addEventListener('click', toggleNearbyView);
+  document.getElementById('nearby-destination-form').addEventListener('submit', event => {
+    event.preventDefault();
+    state.nearbyDestination = document.getElementById('nearby-destination').value.trim().toUpperCase();
+    saveState();
+    findNearbyTafAirports({ refresh: true, origin: 'destination' });
+  });
+  document.getElementById('nearby-use-location').addEventListener('click', () => findNearbyTafAirports({ refresh: true, origin: 'gps' }));
+  document.getElementById('nearby-destination').addEventListener('input', event => {
+    const input = event.currentTarget;
+    const pos = input.selectionStart;
+    input.value = input.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4);
+    input.setSelectionRange(pos, pos);
+  });
+  document.getElementById('nearby-destination').addEventListener('click', event => event.currentTarget.select());
+  document.getElementById('open-settings').addEventListener('click', openSettings);
+  document.getElementById('close-settings').addEventListener('click', closeSettings);
+  document.getElementById('cancel-settings').addEventListener('click', closeSettings);
+  document.getElementById('settings-overlay').addEventListener('click', event => {
+    if (event.target.id === 'settings-overlay') closeSettings();
+  });
+  document.getElementById('settings-form').addEventListener('submit', saveSettings);
+  document.getElementById('export-saved-inputs').addEventListener('click', exportSavedInputs);
+  document.getElementById('import-saved-inputs').addEventListener('click', () => {
+    const input = document.getElementById('import-saved-inputs-file');
+    input.value = '';
+    input.click();
+  });
+  document.getElementById('import-saved-inputs-file').addEventListener('change', importSavedInputs);
+  document.getElementById('nearby-radius').addEventListener('click', event => event.currentTarget.select());
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeSettings();
+  });
   document.getElementById('create-group').addEventListener('click', createGroupFromSelection);
   document.getElementById('open-sidebar').addEventListener('click', () => setSidebar(!state.sidebarOpen));
   document.getElementById('close-sidebar').addEventListener('click', () => setSidebar(false));
   document.getElementById('sidebar-scrim').addEventListener('click', () => setSidebar(false));
   document.getElementById('add-suggested').addEventListener('click', () => addAirport('ESSA'));
   document.getElementById('dep-time').addEventListener('change', event => {
-    state.departureTime = event.currentTarget.value;
-    saveState();
-    renderCards();
+    commitFlightTime(event.currentTarget, 'departureTime');
   });
   document.getElementById('arr-time').addEventListener('change', event => {
-    state.arrivalTime = event.currentTarget.value;
+    commitFlightTime(event.currentTarget, 'arrivalTime');
+  });
+  document.getElementById('clear-times').addEventListener('click', () => {
+    state.departureTime = '';
+    state.arrivalTime = '';
     saveState();
     renderCards();
   });
@@ -63,17 +108,22 @@ function loadState() {
       .filter(item => item && /^[A-Z]{4}$/.test(item.icao))
       .map(item => ({
         icao: item.icao,
-        ...(isCachedReport(item.metar) ? { metar: item.metar } : {}),
-        ...(isCachedReport(item.taf) ? { taf: item.taf } : {})
+        ...(isCachedReport(item.metar) ? { metar: restoreCachedReport(item.metar) } : {}),
+        ...(isCachedReport(item.taf) ? { taf: restoreCachedReport(item.taf) } : {})
       })) : [];
     state.groups = Array.isArray(saved.groups) ? saved.groups.filter(group => group && typeof group.id === 'string' && typeof group.name === 'string') : [];
-    state.groups.forEach(group => { group.airports = Array.isArray(group.airports) ? group.airports.filter(icao => state.airports.some(item => item.icao === icao)) : []; });
+    state.groups.forEach(group => { group.airports = Array.isArray(group.airports) ? [...new Set(group.airports.filter(icao => state.airports.some(item => item.icao === icao)))] : []; });
+    ensureAirportGroupMembership();
     state.activeGroup = saved.activeGroup || null;
     state.departureTime = typeof saved.departureTime === 'string' ? saved.departureTime : '';
     state.arrivalTime = typeof saved.arrivalTime === 'string' ? saved.arrivalTime : '';
+    state.nearbyRadiusNm = Number.isFinite(saved.nearbyRadiusNm) && saved.nearbyRadiusNm >= 1 && saved.nearbyRadiusNm <= 1000
+      ? saved.nearbyRadiusNm : DEFAULT_NEARBY_RADIUS_NM;
+    state.nearbyDestination = typeof saved.nearbyDestination === 'string' && /^[A-Z]{4}$/.test(saved.nearbyDestination) ? saved.nearbyDestination : '';
     if (state.activeGroup && !state.groups.some(group => group.id === state.activeGroup)) state.activeGroup = null;
+    saveState();
   } catch (error) {
-    console.warn('Kunde inte läsa sparad briefing:', error);
+    console.warn('Could not load saved briefing:', error);
   }
 }
 
@@ -82,23 +132,221 @@ function saveState() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
     airports: state.airports.map(({ icao, metar, taf }) => ({
       icao,
-      ...(isCachedReport(metar) ? { metar: { raw: metar.raw, time: metar.time || '' } } : {}),
-      ...(isCachedReport(taf) ? { taf: { raw: taf.raw, time: taf.time || '' } } : {})
+      ...(isCachedReport(metar) ? { metar: serializeCachedReport(metar) } : {}),
+      ...(isCachedReport(taf) ? { taf: serializeCachedReport(taf) } : {})
     })),
     groups: state.groups,
     activeGroup: state.activeGroup,
     departureTime: state.departureTime,
-    arrivalTime: state.arrivalTime
+    arrivalTime: state.arrivalTime,
+    nearbyRadiusNm: state.nearbyRadiusNm,
+    nearbyDestination: state.nearbyDestination
     }));
   } catch (error) {
-    console.warn('Kunde inte spara briefingens vädercache:', error);
+    console.warn('Could not save the briefing weather cache:', error);
   }
   document.getElementById('dep-time').value = state.departureTime;
   document.getElementById('arr-time').value = state.arrivalTime;
+  document.getElementById('nearby-destination').value = state.nearbyDestination;
 }
 
 function isCachedReport(report) {
   return report && typeof report.raw === 'string' && report.raw.trim().length > 0;
+}
+
+function ensureAirportGroupMembership() {
+  if (state.airports.length && !state.groups.length) {
+    state.groups.push({ id: createGroupId(), name: 'General', airports: [] });
+  }
+  for (const airport of state.airports) {
+    if (!state.groups.some(group => group.airports.includes(airport.icao))) state.groups[0]?.airports.push(airport.icao);
+  }
+}
+
+function createGroupId() {
+  let id;
+  do { id = `group-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
+  while (state.groups.some(group => group.id === id));
+  return id;
+}
+
+function restoreCachedReport(report) {
+  return {
+    raw: report.raw,
+    time: typeof report.time === 'string' ? report.time : '',
+    ...(Number.isFinite(report.retrievedAt) ? { retrievedAt: report.retrievedAt } : {})
+  };
+}
+
+function serializeCachedReport(report) {
+  return {
+    raw: report.raw,
+    time: report.time || '',
+    ...(Number.isFinite(report.retrievedAt) ? { retrievedAt: report.retrievedAt } : {})
+  };
+}
+
+function openSettings() {
+  const overlay = document.getElementById('settings-overlay');
+  const input = document.getElementById('nearby-radius');
+  input.value = String(state.nearbyRadiusNm);
+  overlay.hidden = false;
+  input.focus();
+  input.select();
+}
+
+function closeSettings() {
+  document.getElementById('settings-overlay').hidden = true;
+}
+
+function saveSettings(event) {
+  event.preventDefault();
+  const input = document.getElementById('nearby-radius');
+  const radius = Number(input.value);
+  if (!Number.isFinite(radius) || radius < 1 || radius > 1000) {
+    input.setCustomValidity('Enter a distance from 1 to 1,000 NM.');
+    input.reportValidity();
+    return;
+  }
+  input.setCustomValidity('');
+  const shouldRefreshNearby = state.nearbyMode && state.nearbyHasSearched && radius !== state.nearbyRadiusNm;
+  state.nearbyRadiusNm = radius;
+  saveState();
+  closeSettings();
+  if (shouldRefreshNearby) {
+    findNearbyTafAirports({ refresh: true, origin: state.nearbyOrigin === 'GPS' ? 'gps' : 'destination' });
+  } else {
+    renderCards();
+  }
+}
+
+function exportSavedInputs() {
+  const exported = {
+    format: 'aviation-briefing-saved-inputs',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    airports: state.airports.map(airport => airport.icao),
+    groups: state.groups.map(group => ({ id: group.id, name: group.name, color: group.color || '#203735', airports: [...group.airports] })),
+    activeGroup: state.activeGroup,
+    flightTimesUtc: {
+      departure: state.departureTime,
+      arrival: state.arrivalTime
+    },
+    nearby: {
+      radiusNm: state.nearbyRadiusNm,
+      destinationIcao: state.nearbyDestination
+    }
+  };
+  const blob = new Blob([`${JSON.stringify(exported, null, 2)}\n`], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `aviation-briefing-inputs-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function importSavedInputs(event) {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!window.confirm('Importing this backup will replace your saved airports, groups, flight times, and Nearby settings. Continue?')) {
+    input.value = '';
+    return;
+  }
+  try {
+    const backup = JSON.parse(await file.text());
+    if (backup?.format !== 'aviation-briefing-saved-inputs' || backup.version !== 1 || !Array.isArray(backup.airports) || !Array.isArray(backup.groups)) {
+      throw new Error('This file is not a supported Aviation Briefing backup.');
+    }
+    const airportCodes = [...new Set(backup.airports.map(code => String(code).trim().toUpperCase()).filter(code => /^[A-Z]{4}$/.test(code)))];
+    const airportSet = new Set(airportCodes);
+    const groupIds = new Set();
+    const groups = backup.groups.filter(group => group && typeof group.name === 'string').map((group, index) => {
+      let id = typeof group.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(group.id) ? group.id : `imported-${Date.now()}-${index}`;
+      if (groupIds.has(id)) id = `imported-${Date.now()}-${index}`;
+      groupIds.add(id);
+      const airports = Array.isArray(group.airports)
+        ? [...new Set(group.airports.map(code => String(code).trim().toUpperCase()).filter(code => airportSet.has(code)))]
+        : [];
+      const color = typeof group.color === 'string' && /^#[0-9a-f]{6}$/i.test(group.color) ? group.color : '#203735';
+      return { id, name: group.name.trim().slice(0, 48), color, airports };
+    }).filter(group => group.name);
+    const normalizeImportedTime = (value, field) => {
+      if (value === undefined || value === null || value === '') return '';
+      if (typeof value !== 'string') throw new Error(`The ${field} time in this backup is invalid.`);
+      const normalized = normalizeFlightTime(value);
+      if (normalized === null) throw new Error(`The ${field} time in this backup is invalid.`);
+      return normalized;
+    };
+    const departure = normalizeImportedTime(backup.flightTimesUtc?.departure, 'departure');
+    const arrival = normalizeImportedTime(backup.flightTimesUtc?.arrival, 'arrival');
+    const radius = backup.nearby?.radiusNm;
+    if (radius !== undefined && (!Number.isFinite(radius) || radius < 1 || radius > 1000)) throw new Error('The Nearby radius in this backup is invalid.');
+    const destination = typeof backup.nearby?.destinationIcao === 'string'
+      ? backup.nearby.destinationIcao.trim().toUpperCase()
+      : '';
+
+    state.airports = airportCodes.map(icao => ({ icao }));
+    state.groups = groups;
+    ensureAirportGroupMembership();
+    state.activeGroup = groups.some(group => group.id === backup.activeGroup) ? backup.activeGroup : null;
+    state.departureTime = departure;
+    state.arrivalTime = arrival;
+    state.nearbyRadiusNm = radius ?? DEFAULT_NEARBY_RADIUS_NM;
+    state.nearbyDestination = /^[A-Z]{4}$/.test(destination) ? destination : '';
+    state.nearbyMode = false;
+    state.nearbyResults = [];
+    state.nearbyHasSearched = false;
+    state.selected.clear();
+    state.expandedWind.clear();
+    saveState();
+    render();
+    closeSettings();
+    if (state.airports.length) refreshAll({ quiet: true });
+    showStatus('Saved inputs imported.');
+  } catch (error) {
+    showStatus(error?.message || 'Could not import saved inputs.', true);
+  } finally {
+    input.value = '';
+  }
+}
+
+function commitFlightTime(input, stateKey) {
+  const normalized = normalizeFlightTime(input.value);
+  if (normalized === null) {
+    input.value = state[stateKey];
+    showStatus('Enter a time as HH or HH:MM, for example 20 or 20:30.', true);
+    return;
+  }
+  input.value = normalized;
+  state[stateKey] = normalized;
+  saveState();
+  renderCards();
+}
+
+function normalizeFlightTime(value) {
+  const text = value.trim();
+  if (!text) return '';
+  let hours;
+  let minutes;
+  if (/^\d{1,2}$/.test(text)) {
+    hours = Number(text);
+    minutes = 0;
+  } else if (/^\d{3,4}$/.test(text)) {
+    hours = Number(text.slice(0, -2));
+    minutes = Number(text.slice(-2));
+  } else if (/^\d{1,2}:\d{0,2}$/.test(text)) {
+    const [hourText, minuteText] = text.split(':');
+    hours = Number(hourText);
+    minutes = minuteText ? Number(minuteText) : 0;
+  } else {
+    return null;
+  }
+  if (hours > 23 || minutes > 59) return null;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
 function escapeHtml(value) {
@@ -116,7 +364,7 @@ function formatWeatherMarkup(raw, product = 'metar') {
     ? value < 400 ? '#ff55dc' : value <= 549 ? '#ff6969' : value <= 800 ? '#ffae5c' : value <= 1400 ? '#e6ca62' : '#70dfa3'
     : value < 550 ? '#ff55dc' : value < 1400 ? '#ff6969' : value < 2300 ? '#ffae5c' : '#70dfa3';
   html = html.replace(/R\d{2}[LCR]?\/[PM]?(\d{3,4})/g, (match, value) => `<span style="color:${visibilityColor(Number(value))};font-weight:700">${match}</span>`);
-  html = html.replace(/\b(OVC|BKN)(\d{3})\b/g, (match, type, value) => {
+  html = html.replace(/\b(OVC|BKN)(\d{3})(CB)?\b/g, (match, type, value, convective = '') => {
     const hundredsOfFeet = Number(value);
     const color = product === 'metar'
       ? hundredsOfFeet < 2 ? '#ff6969'
@@ -127,12 +375,15 @@ function formatWeatherMarkup(raw, product = 'metar') {
         : hundredsOfFeet <= 3 ? '#ff6969'
         : hundredsOfFeet <= 8 ? '#ffae5c'
           : hundredsOfFeet < 24 ? '#e6ca62' : '#70dfa3';
-    if (!color) return match;
-    return `<span style="color:${color};font-weight:700">${match}</span>`;
+    const cloudLayer = color
+      ? `<span style="color:${color};font-weight:700">${type}${value}</span>`
+      : `${type}${value}`;
+    const convectiveMarker = convective ? `<span style="color:#ffae5c;font-weight:700">${convective}</span>` : '';
+    return color || convective ? `${cloudLayer}${convectiveMarker}` : match;
   });
   html = html.replace(/(^|\s)(\d{4})(?=\s|$)/g, (match, prefix, digits) => `<span style="color:${visibilityColor(Number(digits))};font-weight:700">${prefix}${digits}</span>`);
-  const wordColors = { TCU: '#ffae5c', TS: '#e879e4', CB: '#ffae5c', FG: '#ffae5c', CAVOK: '#70dfa3' };
-  html = html.replace(/\b(TCU|CAVOK|TS|CB|FG)\b/g, word => `<span style="color:${wordColors[word]};font-weight:700">${word}</span>`);
+  const wordColors = { TCU: '#ffae5c', TS: '#e879e4', FG: '#ffae5c', CAVOK: '#70dfa3' };
+  html = html.replace(/\b(TCU|CAVOK|TS|FG)\b/g, word => `<span style="color:${wordColors[word]};font-weight:700">${word}</span>`);
   return html;
 }
 
@@ -140,10 +391,31 @@ function formatTafForFlightWindow(raw) {
   const info = getFlightWindow();
   const slices = getTafWindowSlices(raw, info);
   if (!slices.length) return formatWeatherMarkup(raw, 'taf');
-  return slices.map(slice => {
-    const html = formatWeatherMarkup(raw.slice(slice.start, slice.end), 'taf');
-    return slice.highlight ? `<mark class="taf-flight-window" title="TAF-period som överlappar DEP–ARR">${html}</mark>` : html;
-  }).join('');
+  const ranges = slices.filter(slice => slice.highlight).map(slice => ({ start: slice.start, end: slice.end }));
+  const baseWind = extractWindForWindow(raw, info).find(wind => wind.source === 'BASE');
+  if (baseWind) {
+    const marker = /(?:^|\s)(?:FM\d{6}|BECMG\s+\d{4}\/\d{4}|TEMPO\s+\d{4}\/\d{4}|PROB\d{2}(?:\s+TEMPO)?\s+\d{4}\/\d{4})/;
+    const baseEnd = raw.match(marker)?.index ?? raw.length;
+    const baseText = raw.slice(0, baseEnd);
+    const windMatch = /(?:^|\s)(?:\d{3}|VRB)\d{2,3}(?:G\d{2,3})?KT(?=\s|$)/.exec(baseText);
+    if (windMatch) {
+      const start = windMatch.index + (/^\s/.test(windMatch[0]) ? 1 : 0);
+      const end = start + windMatch[0].trim().length;
+      const alreadyHighlighted = ranges.some(range => start >= range.start && end <= range.end);
+      if (!alreadyHighlighted) ranges.push({ start, end });
+    }
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  let html = '';
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.start < cursor) continue;
+    html += formatWeatherMarkup(raw.slice(cursor, range.start), 'taf');
+    html += `<mark class="taf-flight-window" title="TAF period or wind group applicable during DEP–ARR">${formatWeatherMarkup(raw.slice(range.start, range.end), 'taf')}</mark>`;
+    cursor = range.end;
+  }
+  html += formatWeatherMarkup(raw.slice(cursor), 'taf');
+  return html;
 }
 
 function showStatus(message, isError = false) {
@@ -160,7 +432,7 @@ function handleSearch(event) {
   const input = document.getElementById('airport-input');
   const icao = input.value.trim().toUpperCase();
   if (!/^[A-Z]{4}$/.test(icao)) {
-    showStatus('Ange en giltig ICAO-kod med fyra bokstäver.', true);
+    showStatus('Enter a valid four-letter ICAO code.', true);
     input.focus();
     return;
   }
@@ -170,13 +442,16 @@ function handleSearch(event) {
 
 function addAirport(icao) {
   if (state.airports.some(item => item.icao === icao)) {
-    showStatus(`${icao} finns redan i din briefing.`);
+    showStatus(`${icao} is already in your briefing.`);
     return false;
   }
-  state.airports.unshift({ icao });
+  state.airports.push({ icao });
+  ensureAirportGroupMembership();
+  const activeGroup = state.groups.find(group => group.id === state.activeGroup);
+  if (activeGroup && !activeGroup.airports.includes(icao)) activeGroup.airports.push(icao);
   saveState();
   render();
-  showStatus(`${icao} har lagts till.`);
+  showStatus(`${icao} added.`);
   refreshAirport(icao);
   return true;
 }
@@ -199,19 +474,21 @@ function render() {
   renderSidebar();
   renderCards();
   document.getElementById('group-count').textContent = String(state.groups.length);
-  document.getElementById('selection-count').textContent = `${state.selected.size} kort markerade`;
+  document.getElementById('selection-count').textContent = `${state.selected.size} cards selected`;
 }
 
 function renderSidebar() {
   const list = document.getElementById('group-list');
   const allActive = !state.activeGroup;
-  const all = `<button class="group-item ${allActive ? 'active' : ''}" data-group="all"><span class="group-item-name">Alla flygplatser</span><span class="group-item-count">${state.airports.length}</span></button>`;
-  const groups = state.groups.map(group => `<div class="group-item ${state.activeGroup === group.id ? 'active' : ''}" data-group-row="${escapeHtml(group.id)}">
-      <button class="group-item-name" data-group="${escapeHtml(group.id)}" title="Visa grupp">${escapeHtml(group.name)}</button>
-      <span class="group-item-count">${group.airports.length}</span>
-      <button class="icon-button group-delete" data-delete-group="${escapeHtml(group.id)}" aria-label="Ta bort gruppen ${escapeHtml(group.name)}" title="Ta bort grupp">×</button>
+  const all = `<button class="group-item ${allActive ? 'active' : ''}" role="tab" aria-controls="airport-grid" aria-selected="${allActive}" data-group="all"><span class="group-item-name">All airports</span><span class="group-item-count">${state.airports.length}</span></button>`;
+  const groups = state.groups.map(group => `<div class="group-item ${state.activeGroup === group.id ? 'active' : ''}" data-group-row="${escapeHtml(group.id)}" style="--group-color:${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}">
+      <button class="group-item-name" role="tab" aria-controls="airport-grid" aria-selected="${state.activeGroup === group.id}" data-group="${escapeHtml(group.id)}" title="Show group">${escapeHtml(group.name)}</button>
+      <span class="group-item-count" data-group-count="${escapeHtml(group.id)}">${group.airports.length}</span>
+      <input class="group-color" type="color" value="${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}" data-group-color="${escapeHtml(group.id)}" aria-label="Choose color for ${escapeHtml(group.name)}" title="Choose group color">
+      <button class="icon-button group-rename" data-rename-group="${escapeHtml(group.id)}" aria-label="Rename group ${escapeHtml(group.name)}" title="Rename group">✎</button>
+      <button class="icon-button group-delete" data-delete-group="${escapeHtml(group.id)}" aria-label="Delete group ${escapeHtml(group.name)}" title="Delete group">×</button>
     </div>`).join('');
-  list.innerHTML = state.groups.length ? all + groups : `${all}<div class="group-empty">Skapa en grupp för att samla flygplatser, till exempel för en rutt eller ett område.</div>`;
+  list.innerHTML = state.groups.length ? all + groups : `${all}<div class="group-empty">Create a group to collect airports, for example by route or area.</div>`;
   list.querySelectorAll('[data-group]').forEach(button => button.addEventListener('click', () => {
     state.activeGroup = button.dataset.group === 'all' ? null : button.dataset.group;
     saveState();
@@ -219,32 +496,70 @@ function renderSidebar() {
     if (window.innerWidth < 1050) setSidebar(false);
   }));
   list.querySelectorAll('[data-delete-group]').forEach(button => button.addEventListener('click', () => deleteGroup(button.dataset.deleteGroup)));
+  list.querySelectorAll('[data-rename-group]').forEach(button => button.addEventListener('click', () => beginGroupRename(button.dataset.renameGroup)));
+  list.querySelectorAll('[data-group-color]').forEach(input => input.addEventListener('input', () => {
+    const group = state.groups.find(item => item.id === input.dataset.groupColor);
+    if (!group) return;
+    group.color = input.value;
+    const row = input.closest('[data-group-row]');
+    row.style.setProperty('--group-color', input.value);
+    saveState();
+  }));
 }
 
 function renderCards() {
   const grid = document.getElementById('airport-grid');
-  const airports = airportsInActiveGroup();
+  const airports = state.nearbyMode ? state.nearbyResults : airportsInActiveGroup();
   const empty = document.getElementById('empty-state');
   const selectedTime = state.arrivalTime || state.departureTime;
   document.getElementById('flight-time-note').textContent = getFlightWindow()
-    ? `TAF-perioder som överlappar ${state.departureTime}–${state.arrivalTime} UTC markeras. Möjlig alternativflygplats bedöms inom fönstret.`
+    ? `TAF periods overlapping ${state.departureTime}–${state.arrivalTime} UTC are highlighted. Possible alternates are assessed within this window.`
     : selectedTime
-      ? `TAF analyseras för ${selectedTime} UTC${state.arrivalTime ? ' (ARR)' : ' (DEP)'}. Ange både DEP och ARR för att markera hela tidsfönstret.`
-      : 'TAF analyseras för nuvarande tid UTC. Ange DEP och ARR för att markera flygfönstret.';
+      ? `TAF is assessed for ${selectedTime} UTC${state.arrivalTime ? ' (ARR)' : ' (DEP)'}. Enter both DEP and ARR to highlight the full time window.`
+      : 'Possible alternates are assessed from now through the next 3 hours UTC. Enter DEP and ARR to set a different assessment window.';
   const group = state.groups.find(item => item.id === state.activeGroup);
-  document.getElementById('view-title').textContent = group ? group.name : 'Flygplatser';
-  document.getElementById('view-eyebrow').textContent = group ? 'DIN GRUPP' : 'DIN ÖVERSIKT';
-  document.getElementById('view-subtitle').textContent = group ? `${group.airports.length} flygplats${group.airports.length === 1 ? '' : 'er'} i gruppen.` : 'Väderläget på dina flygplatser, samlat på ett ställe.';
-  grid.innerHTML = airports.map(airport => renderCard(airport)).join('');
-  empty.classList.toggle('visible', airports.length === 0);
+  document.getElementById('view-title').textContent = state.nearbyMode ? 'Nearby Possible Alternates' : group ? group.name : 'Airports';
+  document.getElementById('view-eyebrow').textContent = state.nearbyMode ? `${state.nearbyOrigin.toUpperCase()} · WITHIN ${state.nearbyRadiusNm} NM` : group ? 'YOUR GROUP' : 'YOUR OVERVIEW';
+  document.getElementById('view-subtitle').textContent = state.nearbyMode
+    ? state.nearbyLoading ? 'Checking nearby TAFs against your planning minima…' : `${airports.length} possible alternate${airports.length === 1 ? '' : 's'} meeting your planning minima, sorted by distance.`
+    : group ? `${group.airports.length} airport${group.airports.length === 1 ? '' : 's'} in this group.` : 'Weather at your airports, all in one place.';
+  grid.innerHTML = state.nearbyMode
+    ? airports.map(airport => renderCard(airport, true)).join('')
+    : airports.map(airport => renderCard(airport)).join('');
+  if (state.nearbyMode && state.nearbyLoading && !airports.length) {
+    grid.innerHTML = '<p class="nearby-message">Finding airports and checking TAFs against your planning minima…</p>';
+  }
+  if (state.nearbyMode && !state.nearbyLoading && !airports.length) {
+    grid.innerHTML = state.nearbyHasSearched
+      ? '<p class="nearby-message">No nearby airports meet your planning minima at the selected time.</p>'
+      : '<p class="nearby-message">Enter a destination ICAO and search, or choose Use my location to search from GPS.</p>';
+  }
+  document.getElementById('nearby-taf').classList.toggle('active', state.nearbyMode);
+  document.getElementById('nearby-taf').title = `Find possible alternates within ${state.nearbyRadiusNm} NM`;
+  document.getElementById('nearby-destination-form').hidden = !state.nearbyMode;
+  empty.classList.toggle('visible', !state.nearbyMode && airports.length === 0);
+  if (state.nearbyMode) {
+    grid.querySelectorAll('[data-wind-toggle]').forEach(button => button.addEventListener('click', () => {
+      const key = button.dataset.windToggle;
+      if (state.expandedWind.has(key)) state.expandedWind.delete(key);
+      else state.expandedWind.add(key);
+      renderCards();
+    }));
+    grid.querySelectorAll('[data-add-nearby]').forEach(button => button.addEventListener('click', () => {
+      const airport = state.nearbyResults.find(item => item.icao === button.dataset.addNearby);
+      if (airport && !state.airports.some(item => item.icao === airport.icao)) addAirport(airport.icao);
+      button.textContent = 'Added';
+      button.disabled = true;
+    }));
+    return;
+  }
   grid.querySelectorAll('[data-select]').forEach(input => input.addEventListener('change', () => {
     if (input.checked) state.selected.add(input.dataset.select);
     else state.selected.delete(input.dataset.select);
-    document.getElementById('selection-count').textContent = `${state.selected.size} kort markerade`;
+    document.getElementById('selection-count').textContent = `${state.selected.size} cards selected`;
   }));
   grid.querySelectorAll('[data-remove]').forEach(button => button.addEventListener('click', () => removeAirport(button.dataset.remove)));
-  grid.querySelectorAll('[data-refresh]').forEach(button => button.addEventListener('click', () => refreshAirport(button.dataset.refresh)));
-  grid.querySelectorAll('[data-assign]').forEach(select => select.addEventListener('change', () => assignAirport(select.dataset.assign, select.value)));
+  grid.querySelectorAll('[data-membership-icao]').forEach(input => input.addEventListener('change', () => updateAirportGroupMembership(input)));
   grid.querySelectorAll('[data-wind-toggle]').forEach(button => button.addEventListener('click', () => {
     const key = button.dataset.windToggle;
     if (state.expandedWind.has(key)) state.expandedWind.delete(key);
@@ -274,45 +589,176 @@ function renderCards() {
   });
 }
 
-function renderCard(airport) {
-  const groups = state.groups.filter(group => group.airports.includes(airport.icao));
+function toggleNearbyView() {
+  if (state.nearbyLoading) return;
+  state.nearbyMode = !state.nearbyMode;
+  state.nearbyResults = [];
+  state.nearbyHasSearched = false;
+  if (state.nearbyMode) state.nearbyOrigin = 'Choose origin';
+  renderCards();
+}
+
+async function findNearbyTafAirports(options = {}) {
+  if (state.nearbyLoading) return;
+  const assessmentWindow = getNearbyAssessmentWindow();
+  state.nearbyMode = true;
+  state.nearbyResults = [];
+  state.nearbyLoading = true;
+  state.nearbyHasSearched = true;
+  state.activeGroup = null;
+  renderCards();
+  try {
+    const airports = await fetchNearbyAirportIndex();
+    let origin;
+    if (options.origin === 'destination') {
+      if (!/^[A-Z]{4}$/.test(state.nearbyDestination)) throw new Error('Enter a valid four-letter destination ICAO code.');
+      origin = airports.find(airport => airport.icao === state.nearbyDestination);
+      if (!origin) throw new Error(`No coordinates found for ${state.nearbyDestination}.`);
+    } else {
+      if (!navigator.geolocation) throw new Error('GPS location is not available in this browser.');
+      const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }));
+      origin = { lat: position.coords.latitude, lon: position.coords.longitude };
+    }
+    state.nearbyOrigin = origin.icao || 'GPS';
+    renderCards();
+    const nearby = airports.map(airport => ({ ...airport, distance: distanceNm(origin.lat, origin.lon, airport.lat, airport.lon) }))
+      .filter(airport => airport.icao !== origin.icao && airport.distance <= state.nearbyRadiusNm)
+      .sort((a, b) => a.distance - b.distance);
+    let next = 0;
+    const workers = Array.from({ length: Math.min(6, nearby.length) }, async () => {
+      while (next < nearby.length) {
+        const airport = nearby[next++];
+        try {
+          const taf = await fetchWorkerWeather(airport.icao, 'taf');
+          if (isCachedReport(taf)) {
+            const report = { ...taf, retrievedAt: Date.now() };
+            if (!isTafExpired(report) && assessPossibleAlternate(report.raw, assessmentWindow)?.possible) {
+              const [metarResult, runwayResult, variationResult] = await Promise.allSettled([
+                fetchWorkerWeather(airport.icao, 'metar'),
+                fetchOurAirportsRunways(airport.icao),
+                fetchOurAirportsVariation(airport.icao)
+              ]);
+              const metar = metarResult.status === 'fulfilled' && isCachedReport(metarResult.value)
+                ? { ...metarResult.value, retrievedAt: Date.now() }
+                : { error: 'No METAR available.' };
+              state.nearbyResults.push({
+                ...airport,
+                taf: report,
+                metar,
+                runways: runwayResult.status === 'fulfilled' ? runwayResult.value : [],
+                magneticVariation: variationResult.status === 'fulfilled' ? variationResult.value : null
+              });
+              state.nearbyResults.sort((a, b) => a.distance - b.distance);
+              renderCards();
+            }
+          }
+        } catch (error) {
+          console.warn(`Could not check TAF for ${airport.icao}:`, error);
+        }
+      }
+    });
+    await Promise.all(workers);
+  } catch (error) {
+    const message = error?.code === 1 ? 'Allow location access to search nearby airports.'
+      : error?.code === 3 ? 'GPS location request timed out.'
+        : error?.message || 'Could not search nearby airports.';
+    showStatus(message, true);
+  } finally {
+    state.nearbyLoading = false;
+    renderCards();
+  }
+}
+
+async function fetchNearbyAirportIndex() {
+  if (!airportCsvPromise) {
+    airportCsvPromise = fetch(OURAIRPORTS_AIRPORTS_URL)
+      .then(response => { if (!response.ok) throw new Error(`Airport list returned HTTP ${response.status}`); return response.text(); })
+      .then(parseAirportCoordinates)
+      .catch(error => { airportCsvPromise = null; throw error; });
+  }
+  return airportCsvPromise;
+}
+
+function parseAirportCoordinates(csvText) {
+  const lines = csvText.split(/\r?\n/);
+  const headers = splitCsvLine(lines[0] || '');
+  const field = name => headers.indexOf(name);
+  const icaoIndex = field('icao_code');
+  const gpsIndex = field('gps_code');
+  const typeIndex = field('type');
+  const latIndex = field('latitude_deg');
+  const lonIndex = field('longitude_deg');
+  if ([typeIndex, latIndex, lonIndex].some(index => index < 0) || (icaoIndex < 0 && gpsIndex < 0)) throw new Error('Airport list is missing coordinate columns.');
+  const result = new Map();
+  for (const line of lines.slice(1)) {
+    if (!line.trim()) continue;
+    const row = splitCsvLine(line);
+    const icao = [row[icaoIndex], row[gpsIndex]].map(value => (value || '').trim().toUpperCase()).find(value => /^[A-Z]{4}$/.test(value)) || '';
+    const lat = Number.parseFloat(row[latIndex]);
+    const lon = Number.parseFloat(row[lonIndex]);
+    if (/^[A-Z]{4}$/.test(icao) && /^(small|medium|large)_airport$/.test(row[typeIndex] || '') && Number.isFinite(lat) && Number.isFinite(lon)) result.set(icao, { icao, lat, lon });
+  }
+  return [...result.values()];
+}
+
+function distanceNm(lat1, lon1, lat2, lon2) {
+  const radians = degrees => degrees * Math.PI / 180;
+  const dLat = radians(lat2 - lat1);
+  const dLon = radians(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(radians(lat1)) * Math.cos(radians(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 3440.065 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function renderCard(airport, nearby = false) {
   const metar = airport.metar || {};
   const taf = airport.taf || {};
+  const tafExpired = isTafExpired(taf);
   const loading = state.busy.has(airport.icao);
-  const metarText = metar.raw || (loading ? 'Hämtar aktuell observation…' : metar.error || 'Ingen METAR tillgänglig.');
-  const tafText = taf.raw || (loading ? 'Hämtar prognos…' : taf.error || 'Ingen TAF tillgänglig.');
-  const options = `<option value="">＋ Grupp</option>${state.groups.map(group => `<option value="${escapeHtml(group.id)}">${escapeHtml(group.name)}</option>`).join('')}`;
+  const metarText = metar.raw || (loading ? 'Loading current observation…' : metar.error || 'No METAR available.');
+  const tafText = taf.raw || (loading ? 'Loading forecast…' : taf.error || 'No TAF available.');
+  const alternateBadge = nearby || isPossibleAlternate(airport) ? ' <span class="alternate-badge">[Possible alternate]</span>' : '';
+  const cardActions = nearby
+    ? `<button class="button nearby-add" type="button" data-add-nearby="${airport.icao}" ${state.airports.some(item => item.icao === airport.icao) ? 'disabled' : ''}>${state.airports.some(item => item.icao === airport.icao) ? 'Added' : '＋ Add to briefing'}</button>`
+    : `${renderGroupMembership(airport.icao)}<button class="icon-button" data-remove="${airport.icao}" title="Remove ${airport.icao}" aria-label="Remove ${airport.icao}">×</button>`;
+  const cardIdentification = nearby
+    ? `<div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}</h2><p class="nearby-distance">${airport.distance.toFixed(1)} NM away</p></div>`
+    : `<input class="card-select" type="checkbox" data-select="${airport.icao}" aria-label="Select ${airport.icao}" ${state.selected.has(airport.icao) ? 'checked' : ''}><div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}</h2></div>`;
   return `<article class="airport-card" data-airport="${airport.icao}">
     <header class="card-head">
-      <button class="drag-handle" type="button" draggable="true" aria-label="Dra för att flytta ${airport.icao}" title="Dra för att ändra ordning">⠿</button>
-      <input class="card-select" type="checkbox" data-select="${airport.icao}" aria-label="Markera ${airport.icao}" ${state.selected.has(airport.icao) ? 'checked' : ''}>
-      <div class="airport-ident"><h2 class="airport-code">${airport.icao}</h2><div class="airport-caption">ICAO · AVIATION WEATHER</div></div>
-      <div class="card-actions">
-        <select class="card-group-select" data-assign="${airport.icao}" aria-label="Lägg ${airport.icao} i grupp">${options}</select>
-        <button class="icon-button" data-refresh="${airport.icao}" title="Uppdatera ${airport.icao}" aria-label="Uppdatera ${airport.icao}" ${loading ? 'disabled' : ''}>${loading ? '…' : '↻'}</button>
-        <button class="icon-button" data-remove="${airport.icao}" title="Ta bort ${airport.icao}" aria-label="Ta bort ${airport.icao}">×</button>
-      </div>
+      ${nearby ? '' : `<button class="drag-handle" type="button" draggable="true" aria-label="Drag to move ${airport.icao}" title="Drag to reorder">⠿</button>`}
+      ${cardIdentification}
+      <div class="card-actions">${cardActions}</div>
     </header>
     <section class="weather-block">
       ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw) : escapeHtml(metarText), metar.error ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null)}
       ${renderWeatherRunwayPanel(airport, 'metar')}
     </section>
     <section class="weather-block taf-block">
-      ${renderWeatherToggle(airport.icao, 'taf', 'TAF', taf.time, taf.raw ? formatTafForFlightWindow(taf.raw) : escapeHtml(tafText), taf.error ? 'error' : taf.raw ? '' : 'placeholder', taf.raw ? getWeatherConditionColors(taf.raw, 'taf') : null)}
+      ${renderWeatherToggle(airport.icao, 'taf', 'TAF', taf.time, taf.raw ? formatTafForFlightWindow(taf.raw) : escapeHtml(tafText), taf.error ? 'error' : taf.raw ? '' : 'placeholder', taf.raw ? getWeatherConditionColors(taf.raw, 'taf') : null, tafExpired ? '<span class="taf-expired" title="TAF validity period has ended">[EXPIRED]</span>' : '')}
       ${renderWeatherRunwayPanel(airport, 'taf')}
       ${renderAlternateAssessment(airport)}
-      ${groups.map(group => `<span class="group-chip">${escapeHtml(group.name)}</span>`).join(' ')}
     </section>
   </article>`;
 }
 
-function renderWeatherToggle(icao, product, label, time, report, reportClass, conditionColors) {
+function renderGroupMembership(icao) {
+  const memberships = state.groups.filter(group => group.airports.includes(icao));
+  const options = state.groups.map(group => `<label class="group-membership-option"><input type="checkbox" data-membership-icao="${icao}" data-membership-group="${escapeHtml(group.id)}" ${group.airports.includes(icao) ? 'checked' : ''}><span>${escapeHtml(group.name)}</span></label>`).join('');
+  return `<details class="group-membership"><summary aria-label="Manage groups for ${icao}">Groups ${memberships.length}</summary><div class="group-membership-options">${options || '<span class="group-empty">Add a group in the sidebar.</span>'}</div></details>`;
+}
+
+function isPossibleAlternate(airport) {
+  const window = getPossibleAlternateWindow();
+  return Boolean(airport.taf?.raw && assessPossibleAlternate(airport.taf.raw, window)?.possible);
+}
+
+function renderWeatherToggle(icao, product, label, time, report, reportClass, conditionColors, statusTag = '') {
   const key = `${icao}:${product}`;
   const expanded = state.expandedWind.has(key);
   const indicator = conditionColors
-    ? `<span class="weather-condition" style="--ceiling-color:${conditionColors.ceiling};--visibility-color:${conditionColors.visibility}" title="Övre halvan: takhöjd. Undre halvan: sikt." aria-label="Takhöjd ${conditionColors.ceilingLabel}; sikt ${conditionColors.visibilityLabel}"></span>`
+    ? `<span class="weather-condition" style="--ceiling-color:${conditionColors.ceiling};--visibility-color:${conditionColors.visibility}" title="Top half: ceiling. Bottom half: visibility." aria-label="Ceiling ${conditionColors.ceilingLabel}; visibility ${conditionColors.visibilityLabel}"></span>`
     : '';
-  return `<button class="weather-summary" type="button" data-wind-toggle="${key}" aria-expanded="${expanded}" aria-controls="wind-panel-${key.replace(':', '-')}" title="Visa eller dölj banvind för ${label}"><span class="weather-heading"><span class="weather-label">${indicator}${label}</span><span class="weather-toggle-right"><span class="weather-time">${escapeHtml(time || '—')}</span><span class="weather-wind-hint">${expanded ? 'Dölj banvind ▴' : 'Visa banvind ▾'}</span></span></span><span class="weather-text ${reportClass}">${report}</span></button>`;
+  return `<button class="weather-summary" type="button" data-wind-toggle="${key}" aria-expanded="${expanded}" aria-controls="wind-panel-${key.replace(':', '-')}" title="Show or hide runway wind for ${label}"><span class="weather-heading"><span class="weather-label">${indicator}${label}${statusTag}</span><span class="weather-toggle-right"><span class="weather-time">${escapeHtml(time || '—')}</span><span class="weather-wind-hint">${expanded ? 'Hide runway wind ▴' : 'Show runway wind ▾'}</span></span></span><span class="weather-text ${reportClass}">${report}</span></button>`;
 }
 
 function getWeatherConditionColors(raw, product) {
@@ -329,30 +775,30 @@ function getWeatherConditionColors(raw, product) {
   const severityColor = (value, ranges) => ranges.find(range => value >= range.min && value <= range.max) || null;
   const ceilingRanges = product === 'metar'
     ? [
-      { min: 0, max: 199, color: '#ff6969', label: 'röd', severity: 4 },
+      { min: 0, max: 199, color: '#ff6969', label: 'red', severity: 4 },
       { min: 201, max: 400, color: '#ffae5c', label: 'orange', severity: 3 },
       { min: 401, max: 3000, color: '#e6ca62', label: 'gul', severity: 2 },
-      { min: 3001, max: Infinity, color: '#70dfa3', label: 'grön', severity: 1 }
+      { min: 3001, max: Infinity, color: '#70dfa3', label: 'green', severity: 1 }
     ]
     : [
-      { min: 200, max: 399, color: '#ff6969', label: 'röd', severity: 4 },
+      { min: 200, max: 399, color: '#ff6969', label: 'red', severity: 4 },
       { min: 400, max: 800, color: '#ffae5c', label: 'orange', severity: 3 },
       { min: 801, max: 2399, color: '#e6ca62', label: 'gul', severity: 2 },
-      { min: 2400, max: Infinity, color: '#70dfa3', label: 'grön', severity: 1 }
+      { min: 2400, max: Infinity, color: '#70dfa3', label: 'green', severity: 1 }
     ];
   const visibilityRanges = product === 'metar'
     ? [
       { min: 0, max: 399, color: '#ff55dc', label: 'magenta', severity: 5 },
-      { min: 400, max: 549, color: '#ff6969', label: 'röd', severity: 4 },
+      { min: 400, max: 549, color: '#ff6969', label: 'red', severity: 4 },
       { min: 550, max: 800, color: '#ffae5c', label: 'orange', severity: 3 },
       { min: 801, max: 1400, color: '#e6ca62', label: 'gul', severity: 2 },
-      { min: 1401, max: Infinity, color: '#70dfa3', label: 'grön', severity: 1 }
+      { min: 1401, max: Infinity, color: '#70dfa3', label: 'green', severity: 1 }
     ]
     : [
       { min: 0, max: 549, color: '#ff55dc', label: 'magenta', severity: 5 },
-      { min: 550, max: 1399, color: '#ff6969', label: 'röd', severity: 4 },
+      { min: 550, max: 1399, color: '#ff6969', label: 'red', severity: 4 },
       { min: 1400, max: 2299, color: '#ffae5c', label: 'orange', severity: 3 },
-      { min: 2300, max: Infinity, color: '#70dfa3', label: 'grön', severity: 1 }
+      { min: 2300, max: Infinity, color: '#70dfa3', label: 'green', severity: 1 }
     ];
 
   const ceilingValues = [...relevantText.matchAll(/\b(?:BKN|OVC|VV)(\d{3})\b/g)]
@@ -368,10 +814,10 @@ function getWeatherConditionColors(raw, product) {
   const ceiling = worst(ceilingValues);
   const visibility = worst(visibilityColors);
   return {
-    ceiling: ceiling?.color || (product === 'metar' ? '#70dfa3' : neutral),
+    ceiling: ceiling?.color || '#70dfa3',
     visibility: visibility?.color || neutral,
-    ceilingLabel: ceiling?.label || (product === 'metar' ? 'ingen molnbas' : 'saknas'),
-    visibilityLabel: visibility?.label || 'saknas'
+    ceilingLabel: ceiling?.label || 'no ceiling',
+    visibilityLabel: visibility?.label || 'unavailable'
   };
 }
 
@@ -390,13 +836,13 @@ async function refreshAirport(icao) {
     const updateReport = (product, result) => {
       const current = airport[product];
       if (result.status === 'fulfilled' && isCachedReport(result.value)) {
-        airport[product] = result.value;
+        airport[product] = { ...result.value, retrievedAt: Date.now() };
         return true;
       }
       if (!isCachedReport(current)) {
         airport[product] = result.status === 'rejected'
-          ? { error: `Kunde inte hämta ${product.toUpperCase()}: ${result.reason?.message || 'okänt fel'}` }
-          : { error: `Ingen ${product.toUpperCase()} tillgänglig.` };
+          ? { error: `Could not fetch ${product.toUpperCase()}: ${result.reason?.message || 'unknown error'}` }
+          : { error: `No ${product.toUpperCase()} available.` };
       }
       return false;
     };
@@ -407,12 +853,12 @@ async function refreshAirport(icao) {
     const variationData = runwayResult.status === 'fulfilled' ? runwayResult.value[1] : null;
     airport.runways = runwayData?.status === 'fulfilled' ? runwayData.value : [];
     airport.magneticVariation = variationData?.status === 'fulfilled' ? variationData.value : null;
-    airport.runwayError = runwayData?.status === 'rejected' ? 'Banriktningar kunde inte hämtas från OurAirports.' : '';
+    airport.runwayError = runwayData?.status === 'rejected' ? 'Could not load runway headings from OurAirports.' : '';
     const failed = [metarResult, tafResult].some(result => result.status === 'rejected');
-    if (failed) showStatus(`Väderdata för ${icao} kunde inte hämtas.`, true);
-    document.getElementById('updated-label').textContent = `Senast uppdaterad ${new Date().toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`;
+    if (failed) showStatus(`Could not fetch weather data for ${icao}.`, true);
+    document.getElementById('updated-label').textContent = `Last updated ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`;
   } catch (error) {
-    console.error(`Kunde inte hämta väder för ${icao}:`, error);
+    console.error(`Could not fetch weather for ${icao}:`, error);
   } finally {
     state.busy.delete(icao);
     renderCards();
@@ -429,9 +875,13 @@ function renderWeatherRunwayPanel(airport, product) {
   if (airport.runwayError) {
     rows = `<p class="runway-empty">${escapeHtml(airport.runwayError)}</p>`;
   } else if (!runwayList.length) {
-    rows = `<p class="runway-empty">${state.busy.has(airport.icao) ? 'Hämtar banriktningar…' : 'Inga banor hittades i OurAirports för flygplatsen.'}</p>`;
+    rows = `<p class="runway-empty">${state.busy.has(airport.icao) ? 'Loading runway headings…' : 'No runways found for this airport in OurAirports.'}</p>`;
   } else {
-    const winds = extractWindForTime(isTaf ? airport.taf?.raw || '' : airport.metar?.raw || '', targetTime);
+    const weatherText = isTaf ? airport.taf?.raw || '' : airport.metar?.raw || '';
+    const flightWindow = isTaf ? getFlightWindow() : null;
+    const winds = flightWindow
+      ? extractWindForWindow(weatherText, flightWindow)
+      : extractWindForTime(weatherText, targetTime);
     rows = renderWindRunways(runwayList, winds);
   }
   return `<div class="wind-panel" id="wind-panel-${key.replace(':', '-')}">
@@ -440,7 +890,7 @@ function renderWeatherRunwayPanel(airport, product) {
 }
 
 function renderWindRunways(runways, winds) {
-  if (!winds || winds.length === 0) return '<p class="runway-empty">Ingen aktiv vindgrupp kunde tolkas för den här tiden.</p>';
+  if (!winds || winds.length === 0) return '<p class="runway-empty">No wind group could be parsed for the selected time or period.</p>';
   const rows = [];
   runways.forEach(runway => {
     const heading = Number(runway.headingDegT);
@@ -453,8 +903,8 @@ function renderWindRunways(runways, winds) {
       const gustCrosswind = wind.variable ? wind.gust : Math.abs(Math.round(wind.gust * Math.sin(angle * Math.PI / 180)));
       const hwLabel = headwind === null ? 'HW/TW —' : headwind >= 0 ? `HW ${headwind} kt` : `TW ${Math.abs(headwind)} kt`;
       const xwLabel = wind.variable
-        ? `XW upp till ${crosswind} kt (VRB)${gustCrosswind > crosswind ? ` · by ${gustCrosswind} kt` : ''}`
-        : `XW ${crosswind} kt${angle > 0 ? ' höger' : angle < 0 ? ' vänster' : ''}${gustCrosswind > crosswind ? ` · by ${gustCrosswind} kt` : ''}`;
+        ? `XW up to ${crosswind} kt (VRB)${gustCrosswind > crosswind ? ` · gust ${gustCrosswind} kt` : ''}`
+        : `XW ${crosswind} kt${angle > 0 ? ' right' : angle < 0 ? ' left' : ''}${gustCrosswind > crosswind ? ` · gust ${gustCrosswind} kt` : ''}`;
       const variation = Number(runway.magneticVariation);
       const magneticHeading = Number.isFinite(variation) ? (heading - variation + 360) % 360 : null;
       const windDirection = wind.variable ? 'VRB' : `${String(wind.direction).padStart(3, '0')}°`;
@@ -464,26 +914,31 @@ function renderWindRunways(runways, winds) {
     scenarios.sort((a, b) => b.gustCrosswind - a.gustCrosswind || (a.headwind ?? -Infinity) - (b.headwind ?? -Infinity));
     if (scenarios.length) rows.push(scenarios[0]);
   });
-  if (!rows.length) return '<p class="runway-empty">Saknar banor med sann riktning för att beräkna komponenter.</p>';
+  if (!rows.length) return '<p class="runway-empty">No runways with true headings available for component calculations.</p>';
   rows.sort((a, b) => a.gustCrosswind - b.gustCrosswind || (b.headwind ?? -Infinity) - (a.headwind ?? -Infinity) || a.ident.localeCompare(b.ident));
   const best = rows[0];
   return rows.map(row => {
     const isBest = row === best;
     const heading = row.magneticHeading === null ? '' : ` · ${row.magneticHeading.toFixed(0)}°M`;
-    return `<div class="runway-result ${isBest ? 'best' : ''}"><span>RWY ${escapeHtml(row.ident)}${heading}${isBest ? ' <b class="best-runway-badge">BÄST</b>' : ''}<small class="runway-wind-used">Vind beräknad på ${escapeHtml(row.windLabel)}${row.source && row.source !== 'METAR' ? ` · ${escapeHtml(row.source)}` : ''}</small></span><span>${escapeHtml(row.hwLabel)} · ${escapeHtml(row.xwLabel)}</span></div>`;
+    return `<div class="runway-result ${isBest ? 'best' : ''}"><span>RWY ${escapeHtml(row.ident)}${heading}${isBest ? ' <b class="best-runway-badge">BEST</b>' : ''}<small class="runway-wind-used">Wind calculated using ${escapeHtml(row.windLabel)}${row.source && row.source !== 'METAR' ? ` · ${escapeHtml(row.source)}` : ''}</small></span><span>${escapeHtml(row.hwLabel)} · ${escapeHtml(row.xwLabel)}</span></div>`;
   }).join('');
 }
 
 function renderAlternateAssessment(airport) {
-  const window = getFlightWindow();
-  if (!window) return '';
-  if (!airport.taf?.raw) return `<p class="alternate-assessment unavailable">Possible alternate: ingen TAF för bedömning inom DEP–ARR-fönstret.</p>`;
+  const window = getPossibleAlternateWindow();
+  if (!airport.taf?.raw) return '';
   const assessment = assessPossibleAlternate(airport.taf.raw, window);
-  if (!assessment) return `<p class="alternate-assessment unavailable">Possible alternate: kunde inte bedömas inom DEP–ARR-fönstret.</p>`;
-  const text = assessment.possible
-    ? 'Possible alternate · dina planeringsminima uppfyllda i TAF-grupper som överlappar DEP–ARR'
-    : `Planeringsminima ej uppfyllda · ${assessment.reasons.join(', ')}`;
-  return `<p class="alternate-assessment ${assessment.possible ? 'possible' : 'not-possible'}">${escapeHtml(text)} <small>Bedömning mot dina inställda planeringsminima</small></p>`;
+  if (!assessment) return `<p class="alternate-assessment unavailable">Possible alternate: could not be assessed within the selected time window.</p>`;
+  if (assessment.possible) return '';
+  const text = `Planning minima not met · ${assessment.reasons.join(', ')}`;
+  return `<p class="alternate-assessment not-possible">${escapeHtml(text)} <small>Assessed against your configured planning minima</small></p>`;
+}
+
+function getPossibleAlternateWindow() {
+  const selectedWindow = getFlightWindow();
+  if (selectedWindow) return selectedWindow;
+  const start = new Date();
+  return { start, end: new Date(start.getTime() + 3 * 60 * 60 * 1000) };
 }
 
 function getFlightWindow() {
@@ -501,7 +956,15 @@ function getFlightWindow() {
   const end = new Date(start);
   end.setUTCHours(Math.floor(arr / 60), arr % 60, 0, 0);
   if (arr <= dep) end.setUTCDate(end.getUTCDate() + 1);
+  if (end <= new Date()) {
+    start.setUTCDate(start.getUTCDate() + 1);
+    end.setUTCDate(end.getUTCDate() + 1);
+  }
   return { start, end };
+}
+
+function getNearbyAssessmentWindow() {
+  return getPossibleAlternateWindow();
 }
 
 function getTafWindowSlices(raw, window) {
@@ -512,29 +975,48 @@ function getTafWindowSlices(raw, window) {
   if (!validityRange) return [];
   const marker = /(?:^|\s)(FM\d{6}|BECMG\s+\d{4}\/\d{4}|TEMPO\s+\d{4}\/\d{4}|PROB\d{2}(?:\s+TEMPO)?\s+\d{4}\/\d{4})/g;
   const blocks = [...raw.matchAll(marker)].map(match => ({ start: match.index + match[0].length - match[1].length, text: match[1] }));
-  const groups = [{ start: 0, end: blocks[0]?.start ?? raw.length, interval: validityRange, kind: 'BASE' }];
+  const groups = [{
+    start: 0,
+    end: blocks[0]?.start ?? raw.length,
+    interval: { start: new Date(validityRange.start), end: new Date(validityRange.end) },
+    kind: 'BASE'
+  }];
   blocks.forEach((block, index) => {
     const next = blocks[index + 1];
     const fm = block.text.match(/^FM(\d{2})(\d{2})(\d{2})$/);
     let interval;
     let kind;
     if (fm) {
-      const start = resolveTafDayTime(new Date(window.start), Number(fm[1]), Number(fm[2]), Number(fm[3]), window);
+      const start = resolveTafFmDate(validityRange.start, validityRange.end, Number(fm[1]), Number(fm[2]), Number(fm[3]));
       const nextFm = blocks.slice(index + 1).map(item => item.text.match(/^FM(\d{2})(\d{2})(\d{2})$/)).find(Boolean);
-      const end = nextFm ? resolveTafDayTime(start, Number(nextFm[1]), Number(nextFm[2]), Number(nextFm[3]), window) : validityRange.end;
+      const end = nextFm
+        ? resolveTafFmDate(validityRange.start, validityRange.end, Number(nextFm[1]), Number(nextFm[2]), Number(nextFm[3]))
+        : validityRange.end;
       interval = start && end ? { start, end } : null;
       kind = 'FM';
     } else {
       const range = block.text.match(/(\d{2})(\d{2})\/(\d{2})(\d{2})/);
-      if (range) interval = resolveTafRange(new Date(window.start), range.slice(1).map(Number), window);
+      if (range) interval = resolveTafCalendarRange(validityRange.start, range.slice(1).map(Number));
       kind = /^BECMG/.test(block.text) ? 'BECMG' : /^PROB/.test(block.text) ? 'PROB' : 'TEMPO';
     }
     if (interval) groups.push({ start: block.start, end: next?.start ?? raw.length, interval, kind });
   });
   groups.forEach((group, index) => {
     if (group.kind === 'BASE' || group.kind === 'FM') {
-      const next = groups.slice(index + 1).find(item => item.kind === 'FM');
-      if (next && group.interval.end > next.interval.start) group.interval.end = next.interval.start;
+      const nextChange = groups.slice(index + 1)
+        .filter(item => item.kind === 'FM' || item.kind === 'BECMG')
+        .sort((a, b) => a.interval.start - b.interval.start)[0];
+      if (nextChange) {
+        const effectiveAt = nextChange.kind === 'BECMG' ? nextChange.interval.end : nextChange.interval.start;
+        if (group.interval.end > effectiveAt) group.interval.end = effectiveAt;
+      }
+    } else if (group.kind === 'BECMG') {
+      const nextChange = groups.slice(index + 1)
+        .filter(item => item.kind === 'FM' || item.kind === 'BECMG')
+        .sort((a, b) => a.interval.start - b.interval.start)[0];
+      group.interval.end = nextChange
+        ? new Date(Math.min(nextChange.interval.start.getTime(), validityRange.end.getTime()))
+        : new Date(validityRange.end);
     }
   });
   const slices = [];
@@ -568,6 +1050,39 @@ function resolveTafRange(reference, parts, flightWindow) {
   return null;
 }
 
+function resolveTafCalendarRange(reference, parts) {
+  const [startDay, startHour, endDay, endHour] = parts;
+  const candidates = [];
+  for (let monthOffset = -1; monthOffset <= 1; monthOffset++) {
+    const interval = makeUtcDayInterval(
+      reference.getUTCFullYear(),
+      reference.getUTCMonth(),
+      monthOffset,
+      startDay,
+      startHour,
+      endDay,
+      endHour
+    );
+    if (interval) candidates.push(interval);
+  }
+  candidates.sort((a, b) => {
+    const distance = interval => reference < interval.start
+      ? interval.start - reference
+      : reference > interval.end ? reference - interval.end : 0;
+    return distance(a) - distance(b);
+  });
+  return candidates[0] || null;
+}
+
+function isTafExpired(report, now = new Date()) {
+  if (!isCachedReport(report)) return false;
+  const validity = report.raw.match(/\b(\d{2})(\d{2})\/(\d{2})(\d{2})\b/);
+  if (!validity) return false;
+  const reference = Number.isFinite(report.retrievedAt) ? new Date(report.retrievedAt) : now;
+  const range = resolveTafCalendarRange(reference, validity.slice(1).map(Number));
+  return Boolean(range && range.end <= now);
+}
+
 function resolveTafDayTime(reference, day, hour, minute, flightWindow) {
   for (let monthOffset = -1; monthOffset <= 1; monthOffset++) {
     const date = new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth() + monthOffset, day, hour, minute));
@@ -587,13 +1102,13 @@ function assessPossibleAlternate(raw, window) {
   const reasons = [];
   const validity = raw.match(/\b(\d{2})(\d{2})\/(\d{2})(\d{2})\b/);
   const coverage = validity && resolveTafRange(new Date(window.start), validity.slice(1).map(Number), window);
-  if (!coverage || coverage.start > window.start || coverage.end < window.end) reasons.push('TAF täcker inte hela DEP–ARR-fönstret');
+  if (!coverage || coverage.start > window.start || coverage.end < window.end) reasons.push('TAF does not cover the full DEP–ARR window');
   const rvr = [...text.matchAll(/R\d{2}[LCR]?\/([PM]?)(\d{3,4})/g)];
   if (rvr.some(match => Number(match[2]) <= 550 || match[1] === 'M')) reasons.push('RVR ≤ 550 m');
   const vis = [...text.matchAll(/(?:^|\s)(\d{4})(?=\s|$)/g)].map(match => Number(match[1]));
-  if (vis.some(value => value < 1400)) reasons.push('sikt under 1 400 m');
-  if ([...text.matchAll(/\b(?:BKN|OVC)(\d{3})/g)].some(match => Number(match[1]) <= 3)) reasons.push('molnbas BKN/OVC ≤ 300 ft');
-  if (/\bTS\b/.test(text)) reasons.push('åska (TS)');
+  if (vis.some(value => value < 1400)) reasons.push('visibility below 1,400 m');
+  if ([...text.matchAll(/\b(?:BKN|OVC)(\d{3})/g)].some(match => Number(match[1]) <= 3)) reasons.push('BKN/OVC ceiling ≤ 300 ft');
+  if (/\bTS\b/.test(text)) reasons.push('thunderstorm (TS)');
   return { possible: reasons.length === 0, reasons: reasons.length ? [...new Set(reasons)] : ['—'] };
 }
 
@@ -604,6 +1119,7 @@ function getFlightTargetTime() {
   if (!match) return new Date();
   const target = new Date();
   target.setUTCHours(Number(match[1]), Number(match[2]), 0, 0);
+  if (target <= new Date()) target.setUTCDate(target.getUTCDate() + 1);
   return target;
 }
 
@@ -613,7 +1129,7 @@ async function fetchOurAirportsRunways(icao) {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && cached.expiresAt > Date.now() && Array.isArray(cached.runways)) return cached.runways;
   } catch (error) {
-    console.warn(`Kunde inte läsa ban-cache för ${icao}:`, error);
+    console.warn(`Could not read the runway cache for ${icao}:`, error);
   }
 
   if (!runwayCsvPromise) {
@@ -634,7 +1150,7 @@ async function fetchOurAirportsRunways(icao) {
   try {
     localStorage.setItem(cacheKey, JSON.stringify({ expiresAt: Date.now() + RUNWAY_CACHE_TTL_MS, runways }));
   } catch (error) {
-    console.warn(`Kunde inte cacha banor för ${icao}:`, error);
+    console.warn(`Could not cache runways for ${icao}:`, error);
   }
   return runways;
 }
@@ -645,7 +1161,7 @@ async function fetchOurAirportsVariation(icao) {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && cached.expiresAt > Date.now()) return cached.variation;
   } catch (error) {
-    console.warn(`Kunde inte läsa variations-cache för ${icao}:`, error);
+    console.warn(`Could not read the magnetic variation cache for ${icao}:`, error);
   }
   if (!navaidCsvPromise) {
     navaidCsvPromise = fetch(OURAIRPORTS_NAVAIDS_URL)
@@ -658,7 +1174,7 @@ async function fetchOurAirportsVariation(icao) {
   }
   const index = await navaidCsvPromise;
   const variation = index[icao] ?? null;
-  try { localStorage.setItem(cacheKey, JSON.stringify({ expiresAt: Date.now() + RUNWAY_CACHE_TTL_MS, variation })); } catch (error) { console.warn(`Kunde inte cacha variation för ${icao}:`, error); }
+  try { localStorage.setItem(cacheKey, JSON.stringify({ expiresAt: Date.now() + RUNWAY_CACHE_TTL_MS, variation })); } catch (error) { console.warn(`Could not cache magnetic variation for ${icao}:`, error); }
   return variation;
 }
 
@@ -671,7 +1187,7 @@ function parseNavaidVariations(csvText) {
   const typeIndex = headers.indexOf('type');
   const latIndex = headers.indexOf('latitude_deg');
   const lonIndex = headers.indexOf('longitude_deg');
-  if ([airportIndex, variationIndex].some(index => index < 0)) throw new Error('OurAirports NAVAID-CSV saknar variationskolumn.');
+  if ([airportIndex, variationIndex].some(index => index < 0)) throw new Error('OurAirports NAVAID CSV is missing the magnetic variation column.');
   const candidates = {};
   for (let i = 1; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
@@ -704,7 +1220,7 @@ function parseRunwayCsv(csvText) {
   const heHeadingIndex = headers.indexOf('he_heading_degT');
   const closedIndex = headers.indexOf('closed');
   if ([airportIndex, leIdentIndex, leHeadingIndex, heIdentIndex, heHeadingIndex].some(index => index < 0)) {
-    throw new Error('OurAirports CSV saknar förväntade kolumner.');
+    throw new Error('OurAirports CSV is missing expected columns.');
   }
 
   const result = {};
@@ -759,7 +1275,7 @@ async function fetchWorkerWeather(icao, product) {
   if (!expected.test(body)) {
     if (/^(?:No data|Error fetching|Missing or invalid)\b/i.test(body)) throw new Error(body.slice(0, 160));
     const preview = body.replace(/\s+/g, ' ').slice(0, 120);
-    throw new Error(`Worker returnerade inget ${product.toUpperCase()} för ${icao}${preview ? ` (svar: ${preview})` : ' (tomt svar)'}. Kontrollera att TAF-routen är driftsatt.`);
+    throw new Error(`Worker returned no ${product.toUpperCase()} for ${icao}${preview ? ` (response: ${preview})` : ' (empty response)'}. Check that the TAF route is deployed.`);
   }
   return { raw: body, time: product === 'metar' ? timestampFromMetar(body) : timestampFromTaf(body) };
 }
@@ -820,10 +1336,10 @@ function extractWindForTime(weatherText, targetTime) {
     const interval = block.text.match(/(\d{2})(\d{2})\/(\d{2})(\d{2})/);
 
     if (fm) {
-      blockStart = resolveUtcDateOnOrBefore(refDate, Number(fm[1]), Number(fm[2]), Number(fm[3]));
+      blockStart = resolveTafFmDate(start, end, Number(fm[1]), Number(fm[2]), Number(fm[3]));
       const nextFm = blocks.slice(index + 1).find(candidate => /^FM/.test(candidate.text));
       blockEnd = nextFm
-        ? resolveUtcDateAfter(blockStart, Number(nextFm.text.slice(2, 4)), Number(nextFm.text.slice(4, 6)), Number(nextFm.text.slice(6, 8)))
+        ? resolveTafFmDate(start, end, Number(nextFm.text.slice(2, 4)), Number(nextFm.text.slice(4, 6)), Number(nextFm.text.slice(6, 8)))
         : end;
       source = 'FM';
     } else if (interval) {
@@ -862,17 +1378,47 @@ function extractWindForTime(weatherText, targetTime) {
   return active;
 }
 
+function extractWindForWindow(weatherText, flightWindow) {
+  if (!weatherText || !flightWindow || !/\bTAF\b/.test(weatherText)) return [];
+  const sampleTimes = [new Date(flightWindow.start), new Date(flightWindow.end.getTime() - 1)];
+  const trigger = /\b(FM\d{6}|BECMG\s+\d{4}\/\d{4}|TEMPO\s+\d{4}\/\d{4}|PROB\d{2}(?:\s+TEMPO)?\s+\d{4}\/\d{4})/g;
+  for (const match of weatherText.matchAll(trigger)) {
+    const group = match[1];
+    const fm = group.match(/^FM(\d{2})(\d{2})(\d{2})$/);
+    if (fm) {
+      const time = resolveTafDayTime(new Date(flightWindow.start), Number(fm[1]), Number(fm[2]), Number(fm[3]), flightWindow);
+      if (time && time >= flightWindow.start && time < flightWindow.end) sampleTimes.push(time);
+      continue;
+    }
+
+    const range = group.match(/(\d{2})(\d{2})\/(\d{2})(\d{2})/);
+    if (!range) continue;
+    const interval = resolveTafRange(new Date(flightWindow.start), range.slice(1).map(Number), flightWindow);
+    if (!interval) continue;
+    const start = new Date(Math.max(interval.start.getTime(), flightWindow.start.getTime()));
+    const end = new Date(Math.min(interval.end.getTime(), flightWindow.end.getTime()));
+    if (start >= end) continue;
+    sampleTimes.push(start, new Date(start.getTime() + (end.getTime() - start.getTime()) / 2), new Date(end.getTime() - 1));
+  }
+
+  const winds = new Map();
+  for (const sampleTime of sampleTimes) {
+    for (const wind of extractWindForTime(weatherText, sampleTime)) {
+      const key = `${wind.direction}:${wind.speed}:${wind.gust}:${wind.variable}:${wind.source}`;
+      winds.set(key, wind);
+    }
+  }
+  return [...winds.values()];
+}
+
 function makeUtcInterval(reference, startDay, startHour, endDay, endHour, startMinute = 0, endMinute = 0) {
   const target = reference.getTime();
   const year = reference.getUTCFullYear();
   const month = reference.getUTCMonth();
   const candidates = [];
   for (let startOffset = -1; startOffset <= 1; startOffset++) {
-    const start = new Date(Date.UTC(year, month + startOffset, startDay, startHour, startMinute, 0));
-    for (let endOffset = startOffset; endOffset <= startOffset + 1; endOffset++) {
-      const end = new Date(Date.UTC(year, month + endOffset, endDay, endHour, endMinute, 0));
-      if (end > start && target >= start.getTime() && target < end.getTime()) candidates.push({ start, end });
-    }
+    const interval = makeUtcDayInterval(year, month, startOffset, startDay, startHour, endDay, endHour, startMinute, endMinute);
+    if (interval && target >= interval.start.getTime() && target < interval.end.getTime()) candidates.push(interval);
   }
   candidates.sort((a, b) => (a.end - a.start) - (b.end - b.start));
   return candidates[0] || null;
@@ -884,11 +1430,8 @@ function makeUtcIntervalNear(reference, startDay, startHour, endDay, endHour) {
   const month = reference.getUTCMonth();
   const intervals = [];
   for (let startOffset = -1; startOffset <= 1; startOffset++) {
-    const start = new Date(Date.UTC(year, month + startOffset, startDay, startHour, 0, 0));
-    for (let endOffset = startOffset; endOffset <= startOffset + 1; endOffset++) {
-      const end = new Date(Date.UTC(year, month + endOffset, endDay, endHour, 0, 0));
-      if (end > start) intervals.push({ start, end });
-    }
+    const interval = makeUtcDayInterval(year, month, startOffset, startDay, startHour, endDay, endHour);
+    if (interval) intervals.push(interval);
   }
   const active = intervals.filter(interval => target >= interval.start.getTime() && target < interval.end.getTime());
   if (active.length) return active.sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
@@ -897,21 +1440,19 @@ function makeUtcIntervalNear(reference, startDay, startHour, endDay, endHour) {
   return completed[0] || null;
 }
 
-function resolveUtcDateOnOrBefore(reference, day, hour, minute = 0) {
-  const candidates = [];
-  for (let offset = -1; offset <= 0; offset++) {
-    const date = new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth() + offset, day, hour, minute, 0));
-    if (date <= reference) candidates.push(date);
-  }
-  candidates.sort((a, b) => b - a);
-  return candidates[0] || new Date(NaN);
+function makeUtcDayInterval(year, month, startMonthOffset, startDay, startHour, endDay, endHour, startMinute = 0, endMinute = 0) {
+  const start = new Date(Date.UTC(year, month + startMonthOffset, startDay, startHour, startMinute, 0));
+  const endMonthOffset = startMonthOffset + (endDay < startDay ? 1 : 0);
+  const end = new Date(Date.UTC(year, month + endMonthOffset, endDay, endHour, endMinute, 0));
+  if (end <= start && endDay === startDay) end.setUTCDate(end.getUTCDate() + 1);
+  return end > start ? { start, end } : null;
 }
 
-function resolveUtcDateAfter(reference, day, hour, minute = 0) {
+function resolveTafFmDate(validityStart, validityEnd, day, hour, minute = 0) {
   const candidates = [];
-  for (let offset = 0; offset <= 1; offset++) {
-    const date = new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth() + offset, day, hour, minute, 0));
-    if (date > reference) candidates.push(date);
+  for (let offset = -1; offset <= 1; offset++) {
+    const date = new Date(Date.UTC(validityStart.getUTCFullYear(), validityStart.getUTCMonth() + offset, day, hour, minute, 0));
+    if (date >= validityStart && date <= validityEnd) candidates.push(date);
   }
   candidates.sort((a, b) => a - b);
   return candidates[0] || new Date(NaN);
@@ -920,22 +1461,36 @@ function resolveUtcDateAfter(reference, day, hour, minute = 0) {
 async function refreshAll(options = {}) {
   const airports = [...state.airports];
   if (!airports.length) {
-    if (!options.quiet) showStatus('Lägg till en flygplats innan du uppdaterar vädret.');
+  if (!options.quiet) showStatus('Add an airport before refreshing the weather.');
     return;
   }
-  if (!options.quiet) showStatus(`Uppdaterar METAR och TAF för ${airports.length} flygplats${airports.length === 1 ? '' : 'er'}…`);
+  if (!options.quiet) showStatus(`Refreshing METAR and TAF for ${airports.length} airport${airports.length === 1 ? '' : 's'}…`);
   await Promise.all(airports.map(airport => refreshAirport(airport.icao)));
-  if (!options.quiet) showStatus('Väderuppdateringen är klar.');
+  if (!options.quiet) showStatus('Weather update complete.');
 }
 
-function assignAirport(icao, groupId) {
+function updateAirportGroupMembership(input) {
+  const { membershipIcao: icao, membershipGroup: groupId } = input.dataset;
   const group = state.groups.find(item => item.id === groupId);
-  if (!group) return;
-  if (!group.airports.includes(icao)) group.airports.push(icao);
-  state.selected.delete(icao);
+  const airport = state.airports.find(item => item.icao === icao);
+  if (!group || !airport) return;
+  if (!input.checked) {
+    const membershipCount = state.groups.filter(item => item.airports.includes(icao)).length;
+    if (membershipCount <= 1) {
+      input.checked = true;
+      showStatus(`${icao} must remain in at least one group.`, true);
+      return;
+    }
+    group.airports = group.airports.filter(code => code !== icao);
+  } else if (!group.airports.includes(icao)) {
+    group.airports.push(icao);
+  }
   saveState();
-  render();
-  showStatus(`${icao} lades till i ${group.name}.`);
+  renderSidebar();
+  const card = input.closest('.airport-card');
+  const count = state.groups.filter(item => item.airports.includes(icao)).length;
+  card.querySelector('.group-membership summary').textContent = `Groups ${count}`;
+  if (!input.checked && state.activeGroup === groupId) renderCards();
 }
 
 function reorderVisibleAirports(sourceIcao, targetIcao) {
@@ -953,29 +1508,78 @@ function reorderVisibleAirports(sourceIcao, targetIcao) {
 }
 
 function createGroupFromSelection() {
-  if (!state.selected.size) {
-    showStatus('Markera minst ett flygplatskort först.', true);
-    return;
-  }
-  const name = window.prompt('Vad ska gruppen heta?');
+  const name = window.prompt('What should the group be called?');
   if (!name || !name.trim()) return;
-  const group = { id: `group-${Date.now()}`, name: name.trim().slice(0, 48), airports: [...state.selected] };
+  const group = { id: createGroupId(), name: name.trim().slice(0, 48), airports: [...state.selected] };
   state.groups.push(group);
   state.selected.clear();
   state.activeGroup = group.id;
   saveState();
   render();
-  showStatus(`Gruppen ${group.name} skapades.`);
+  showStatus(`Group ${group.name} created.`);
+}
+
+function beginGroupRename(groupId) {
+  const group = state.groups.find(item => item.id === groupId);
+  if (!group) return;
+  const row = document.querySelector(`[data-group-row="${CSS.escape(groupId)}"]`);
+  if (!row || row.querySelector('.group-name-input')) return;
+  const nameButton = row.querySelector('.group-item-name');
+  const renameButton = row.querySelector('.group-rename');
+  row.classList.add('editing');
+  const input = document.createElement('input');
+  input.className = 'group-name-input';
+  input.type = 'text';
+  input.maxLength = 48;
+  input.value = group.name;
+  input.setAttribute('aria-label', 'Group name');
+  nameButton.replaceWith(input);
+  const saveButton = document.createElement('button');
+  saveButton.className = 'icon-button group-rename saving';
+  saveButton.type = 'button';
+  saveButton.textContent = '✓';
+  saveButton.title = 'Save group name';
+  saveButton.setAttribute('aria-label', 'Save group name');
+  renameButton.replaceWith(saveButton);
+  const cancel = document.createElement('button');
+  cancel.className = 'icon-button group-rename-cancel';
+  cancel.type = 'button';
+  cancel.textContent = '×';
+  cancel.title = 'Cancel';
+  cancel.setAttribute('aria-label', 'Cancel renaming');
+  saveButton.after(cancel);
+  const save = () => {
+    const trimmedName = input.value.trim().slice(0, 48);
+  if (!trimmedName) {
+    showStatus('Group name cannot be empty.');
+      input.focus();
+    return;
+  }
+    if (trimmedName === group.name) { renderSidebar(); return; }
+  group.name = trimmedName;
+  saveState();
+  render();
+  showStatus(`Group renamed to ${group.name}.`);
+  };
+  saveButton.addEventListener('click', save);
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); save(); }
+    if (event.key === 'Escape') renderSidebar();
+  });
+  cancel.addEventListener('click', () => renderSidebar());
+  input.focus();
+  input.select();
 }
 
 function deleteGroup(groupId) {
   const group = state.groups.find(item => item.id === groupId);
   if (!group) return;
   state.groups = state.groups.filter(item => item.id !== groupId);
+  ensureAirportGroupMembership();
   if (state.activeGroup === groupId) state.activeGroup = null;
   saveState();
   render();
-  showStatus(`Gruppen ${group.name} togs bort.`);
+  showStatus(`Group ${group.name} deleted.`);
 }
 
 function setSidebar(open) {
