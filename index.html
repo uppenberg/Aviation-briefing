@@ -1,53 +1,76 @@
 <!DOCTYPE html>
 <html lang="sv">
 <head>
-  <base target="_top">
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Aviation Weather & NOTAM Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#101820">
+  <title>Aviation Briefing</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Flygplatsgrupper" aria-hidden="true">
+      <div class="sidebar-header">
+        <div>
+          <p class="eyebrow">SAMLADE KORT</p>
+          <h2>Grupper</h2>
+        </div>
+        <button class="icon-button close-sidebar" id="close-sidebar" aria-label="Stäng grupper">×</button>
+      </div>
+      <p class="sidebar-hint">Markera flygplatskort och skapa en grupp av urvalet.</p>
+      <button class="button button-primary create-group" id="create-group">＋ Skapa grupp från valda</button>
+      <nav class="group-list" id="group-list" aria-label="Grupper"></nav>
+      <div class="sidebar-footer"><span class="selection-count" id="selection-count">0 kort markerade</span></div>
+    </aside>
 
-  <!-- FLIKVÄLJARE & SKAPA/RADERA FLIK -->
-  <div class="panel">
-    <div class="panel-title">Välj, skapa eller radera flik</div>
-    <div class="flex-row">
-      <label>Aktiv Flik: 
-        <select id="sheetSelector" onchange="handleSheetChange()">
-          <!-- Fylls i dynamiskt -->
-        </select>
-      </label>
-      <input type="text" id="newSheetName" placeholder="Ny Fliknamn..." style="width: 110px;">
-      <button onclick="handleCreateSheet()">+ Skapa</button>
-      <button class="danger" onclick="handleDeleteSheet()" title="Ta bort aktiv flik">🗑️ Ta bort</button>
-    </div>
+    <main class="main-content">
+      <header class="topbar">
+        <button class="sidebar-tab" id="open-sidebar" aria-label="Öppna grupper" aria-expanded="false">
+          <span class="tab-icon">▤</span><span>Grupper</span><span class="tab-count" id="group-count">0</span>
+        </button>
+        <a class="brand" href="." aria-label="Aviation Briefing startsida">
+          <span class="brand-mark">✈</span><span><strong>AVIATION</strong><small>WEATHER BRIEFING</small></span>
+        </a>
+        <div class="search-wrap">
+          <form id="airport-search" class="search-box" role="search">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="airport-input" type="search" maxlength="4" autocomplete="off" spellcheck="false" placeholder="Sök flygplats med ICAO, t.ex. ESSA" aria-label="Sök flygplats med ICAO-kod">
+            <kbd>↵</kbd>
+          </form>
+          <span class="search-help">Ange en fyrställigt ICAO-kod och tryck Enter</span>
+        </div>
+        <button class="button refresh-all" id="refresh-all"><span aria-hidden="true">↻</span> Uppdatera alla</button>
+      </header>
+
+      <section class="flight-times" aria-label="Flygtider">
+        <span class="flight-times-title">VÄDER FÖR FLYGTID</span>
+        <label>DEP <input id="dep-time" type="time" aria-label="Avgångstid UTC"></label>
+        <label>ARR <input id="arr-time" type="time" aria-label="Ankomsttid UTC"></label>
+        <span class="flight-times-note" id="flight-time-note">TAF visas för vald ankomsttid, annars avgångstid eller nu.</span>
+      </section>
+
+      <section class="content-area">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow" id="view-eyebrow">DIN ÖVERSIKT</p>
+            <h1 id="view-title">Flygplatser</h1>
+            <p class="subtitle" id="view-subtitle">Väderläget på dina flygplatser, samlat på ett ställe.</p>
+          </div>
+          <span class="updated-label" id="updated-label">Väderdata hämtas från AviationWeather.gov</span>
+        </div>
+        <div class="status-message" id="status-message" role="status" aria-live="polite"></div>
+        <div class="airport-grid" id="airport-grid"></div>
+        <section class="empty-state" id="empty-state">
+          <div class="empty-icon">⌖</div>
+          <h2>Din briefing börjar här</h2>
+          <p>Sök efter en flygplats med dess ICAO-kod för att lägga till den. METAR och TAF visas sedan i varsitt kort.</p>
+          <button class="button button-primary" id="add-suggested">Lägg till ESSA</button>
+        </section>
+      </section>
+      <footer class="app-footer"><span>METAR &amp; TAF</span><span class="footer-dot">·</span><span>UTC</span><span class="footer-dot">·</span><span>AviationWeather.gov</span></footer>
+    </main>
   </div>
-
-  <!-- FLYGTIDER & KONTROLLER -->
-  <div class="panel">
-    <div class="panel-title">Flight Planning & Controls</div>
-    <div class="flex-row">
-      <label>DEP: <input type="text" id="depTime" class="time-input" placeholder="NOW"></label>
-      <label>ARR: <input type="text" id="arrTime" class="time-input" placeholder="NOW"></label>
-      <button onclick="handleSaveTimes()">Spara tider</button>
-      <button class="secondary" onclick="handleUpdateWeather()">🔄 METAR/TAF</button>
-      <button class="secondary" onclick="handleUpdateNotams()">📋 NOTAM</button>
-    </div>
-  </div>
-
-  <!-- LÄGG TILL ICAO -->
-  <div class="panel">
-    <div class="panel-title">Ny Flygplats</div>
-    <div class="flex-row">
-      <input type="text" id="newIcao" class="icao-input" placeholder="ESNU" maxlength="4">
-      <button onclick="handleAddIcao()">+ Lägg till ICAO</button>
-    </div>
-  </div>
-
-  <div id="status"></div>
-  <div id="content" class="loading">Laddar data...</div>
-
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
   <script src="app.js"></script>
 </body>
 </html>
