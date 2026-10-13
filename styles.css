@@ -29,6 +29,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .brand strong, .brand small { display: block; letter-spacing: .11em; }
 .brand strong { font: 700 13px var(--display); }
 .brand small { margin-top: 3px; color: var(--muted); font: 500 9px var(--mono); letter-spacing: .08em; }
+.app-version { align-self: center; margin-left: 1px; padding: 3px 5px; border: 1px solid #30424d; border-radius: 4px; color: #8b9ba4; font: 9px var(--mono); }
 .sidebar-tab { display: inline-flex; align-items: center; gap: 9px; width: max-content; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: #1a2833; color: #d7e1e5; cursor: pointer; font-size: 12px; font-weight: 600; }
 .sidebar-tab:hover, .icon-button:hover { border-color: #536b78; background: var(--surface-raised); }
 .tab-icon { color: var(--accent); font-size: 17px; }
@@ -70,6 +71,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .settings-field input { width: 100px; padding: 8px; border: 1px solid #405460; border-radius: 5px; background: #0d171f; color: #eef4f5; font: 13px var(--mono); }
 .settings-help { margin: 10px 0 0; color: #82929c; font-size: 10px; line-height: 1.6; }
 .backup-section { margin-top: 15px; }
+.update-reload { margin-top: 10px; }
 .backup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .settings-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .settings-export { margin-right: auto; }

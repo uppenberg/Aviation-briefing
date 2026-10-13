@@ -32,7 +32,7 @@
           <span class="tab-icon">▤</span><span>Groups</span><span class="tab-count" id="group-count">0</span>
         </button>
         <a class="brand" href="." aria-label="Aviation Briefing home">
-          <span class="brand-mark">✈</span><span><strong>AVIATION</strong><small>WEATHER BRIEFING</small></span>
+          <span class="brand-mark">✈</span><span><strong>AVIATION</strong><small>WEATHER BRIEFING</small></span><span class="app-version" id="app-version">v—</span>
         </a>
         <div class="search-wrap">
           <form id="airport-search" class="search-box" role="search">
@@ -107,10 +107,17 @@
             <input id="import-saved-inputs-file" type="file" accept="application/json,.json" hidden>
           </div>
         </fieldset>
+        <fieldset class="settings-section backup-section">
+          <legend>Updates</legend>
+          <button class="button" id="check-updates" type="button">Check for updates</button>
+          <p class="settings-help" id="update-status" role="status" aria-live="polite">Check whether a newer app version is available.</p>
+          <button class="button update-reload" id="reload-for-update" type="button" hidden>Reload to update</button>
+        </fieldset>
         <footer class="settings-footer"><button class="button" id="cancel-settings" type="button">Cancel</button><button class="button button-primary" type="submit">Save settings</button></footer>
       </form>
     </section>
   </div>
+  <script src="version.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

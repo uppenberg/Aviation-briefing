@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'aviation-briefing-v2';
+const APP_VERSION = window.AVIATION_BRIEFING_VERSION || 'dev';
 const WEATHER_WORKER_URL = 'https://metar-proxy.uppenberg1.workers.dev/';
 const RUNWAY_CACHE_PREFIX = 'aviation-briefing-runways-';
 const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -31,6 +32,7 @@ const state = {
 document.addEventListener('DOMContentLoaded', init);
 
 function init() {
+  document.getElementById('app-version').textContent = `v${APP_VERSION}`;
   if (window.isSecureContext && 'serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(error => {
       console.warn('Could not register service worker:', error);
@@ -63,6 +65,8 @@ function init() {
     if (event.target.id === 'settings-overlay') closeSettings();
   });
   document.getElementById('settings-form').addEventListener('submit', saveSettings);
+  document.getElementById('check-updates').addEventListener('click', checkForUpdates);
+  document.getElementById('reload-for-update').addEventListener('click', () => window.location.reload());
   document.getElementById('export-saved-inputs').addEventListener('click', exportSavedInputs);
   document.getElementById('import-saved-inputs').addEventListener('click', () => {
     const input = document.getElementById('import-saved-inputs-file');
@@ -197,6 +201,61 @@ function openSettings() {
 
 function closeSettings() {
   document.getElementById('settings-overlay').hidden = true;
+}
+
+async function checkForUpdates() {
+  const button = document.getElementById('check-updates');
+  const status = document.getElementById('update-status');
+  const reloadButton = document.getElementById('reload-for-update');
+  reloadButton.hidden = true;
+  if (!window.isSecureContext || !('serviceWorker' in navigator)) {
+    status.textContent = 'Update checks require the app to be open from its secure website or installed PWA.';
+    return;
+  }
+  button.disabled = true;
+  status.textContent = 'Checking for updates…';
+  try {
+    const registration = await navigator.serviceWorker.getRegistration() || await navigator.serviceWorker.register('./sw.js');
+    let updateFound = Boolean(registration.waiting);
+    let updateActivated = false;
+    registration.addEventListener('updatefound', () => {
+      updateFound = true;
+      const worker = registration.installing;
+      if (!worker) return;
+      worker.addEventListener('statechange', () => {
+        if (worker.state === 'activated') updateActivated = true;
+      });
+    }, { once: true });
+    await registration.update();
+    if (registration.installing && registration.installing !== registration.active) updateFound = true;
+    if (updateFound && !updateActivated && !registration.waiting) {
+      await Promise.race([
+        new Promise(resolve => {
+          const worker = registration.installing;
+          if (!worker) return resolve();
+          if (worker.state === 'activated') { updateActivated = true; return resolve(); }
+          worker.addEventListener('statechange', () => {
+            if (worker.state === 'activated' || worker.state === 'redundant') {
+              updateActivated = worker.state === 'activated';
+              resolve();
+            }
+          });
+        }),
+        new Promise(resolve => setTimeout(resolve, 8000))
+      ]);
+    }
+    if (updateFound || registration.waiting || updateActivated) {
+      status.textContent = `An update is available. You are currently on v${APP_VERSION}. Reload to load it.`;
+      reloadButton.hidden = false;
+    } else {
+      status.textContent = `You are using the latest available version (v${APP_VERSION}).`;
+    }
+  } catch (error) {
+    status.textContent = 'Could not check for updates. Check your internet connection and try again.';
+    console.warn('Could not check for app updates:', error);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function saveSettings(event) {

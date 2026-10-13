@@ -1,6 +1,9 @@
-const CACHE_NAME = 'aviation-briefing-shell-v4';
+importScripts('./version.js');
+
+const CACHE_NAME = `aviation-briefing-shell-v${self.AVIATION_BRIEFING_VERSION}`;
 const APP_SHELL = [
   './index.html',
+  './version.js',
   './styles.css',
   './app.js',
   './manifest.json',
