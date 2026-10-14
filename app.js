@@ -82,6 +82,10 @@ function init() {
     if (event.target.id === 'settings-overlay') closeSettings();
   });
   document.getElementById('settings-form').addEventListener('submit', saveSettings);
+  document.getElementById('preset-list').addEventListener('click', event => {
+    const button = event.target.closest('[data-preset-file]');
+    if (button) addPreset(button.dataset.presetFile, button.dataset.presetName);
+  });
   document.getElementById('check-updates').addEventListener('click', checkForUpdates);
   document.getElementById('reload-for-update').addEventListener('click', () => window.location.reload());
   document.getElementById('export-saved-inputs').addEventListener('click', exportSavedInputs);
@@ -299,10 +303,92 @@ function openSettings() {
   overlay.hidden = false;
   input.focus();
   input.select();
+  loadPresets();
 }
 
 function closeSettings() {
   document.getElementById('settings-overlay').hidden = true;
+}
+
+async function loadPresets() {
+  const list = document.getElementById('preset-list');
+  const status = document.getElementById('preset-status');
+  list.innerHTML = '<span class="settings-help">Loading presets…</span>';
+  status.textContent = '';
+  try {
+    const response = await fetch('./presets/index.json');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const catalog = await response.json();
+    const presets = Array.isArray(catalog.presets) ? catalog.presets.filter(preset =>
+      preset && typeof preset.name === 'string' && typeof preset.file === 'string' && /^[A-Za-z0-9_-]+\.json$/.test(preset.file)
+    ) : [];
+    list.innerHTML = presets.length
+      ? presets.map(preset => `<button class="button preset-button" type="button" data-preset-file="${escapeHtml(preset.file)}" data-preset-name="${escapeHtml(preset.name)}">＋ ${escapeHtml(preset.name)}</button>`).join('')
+      : '<span class="settings-help">No presets added yet. Add JSON files under presets and list them in presets/index.json.</span>';
+  } catch (error) {
+    list.innerHTML = '<span class="settings-help">Presets could not be loaded. Open the app through HTTPS or localhost.</span>';
+    status.textContent = error.message;
+  }
+}
+
+async function addPreset(file, name) {
+  const status = document.getElementById('preset-status');
+  try {
+    const response = await fetch(`./presets/${encodeURIComponent(file)}`);
+    if (!response.ok) throw new Error(`Could not load ${name} (HTTP ${response.status}).`);
+    const preset = await response.json();
+    if (preset?.format !== 'aviation-briefing-saved-inputs' || preset.version !== 1 || !Array.isArray(preset.airports) || !Array.isArray(preset.groups)) {
+      throw new Error(`${name} is not a supported saved-inputs JSON file.`);
+    }
+    if (!window.confirm(`Add missing airports and merge groups from “${name}”? Existing airports and groups will be kept.`)) return;
+    const airportCodes = new Set(preset.airports.map(code => String(code).trim().toUpperCase()).filter(code => /^[A-Z]{4}$/.test(code)));
+    preset.groups.forEach(group => {
+      if (Array.isArray(group?.airports)) group.airports.forEach(code => {
+        const icao = String(code).trim().toUpperCase();
+        if (/^[A-Z]{4}$/.test(icao)) airportCodes.add(icao);
+      });
+    });
+    const existingCodes = new Set(state.airports.map(airport => airport.icao));
+    const addedCodes = [...airportCodes].filter(icao => !existingCodes.has(icao));
+    addedCodes.forEach(icao => state.airports.push({ icao }));
+    for (const sourceGroup of preset.groups) {
+      if (!sourceGroup || typeof sourceGroup.name !== 'string' || !sourceGroup.name.trim()) continue;
+      const groupName = sourceGroup.name.trim().slice(0, 48);
+      // Reuse the exported group when IDs match; across installations the ID may
+      // differ, so fall back to the group name. Preset metadata should be applied
+      // in either case so its tab label and color survive adding/merging it.
+      let targetGroup = (typeof sourceGroup.id === 'string'
+        ? state.groups.find(group => group.id === sourceGroup.id)
+        : null) || state.groups.find(group => group.name.trim().toLowerCase() === groupName.toLowerCase());
+      if (!targetGroup) {
+        targetGroup = {
+          id: createGroupId(),
+          name: groupName,
+          color: typeof sourceGroup.color === 'string' && /^#[0-9a-f]{6}$/i.test(sourceGroup.color) ? sourceGroup.color : '#203735',
+          airports: []
+        };
+        state.groups.push(targetGroup);
+      } else {
+        targetGroup.name = groupName;
+        if (typeof sourceGroup.color === 'string' && /^#[0-9a-f]{6}$/i.test(sourceGroup.color)) {
+          targetGroup.color = sourceGroup.color;
+        }
+      }
+      const members = Array.isArray(sourceGroup.airports) ? sourceGroup.airports : [];
+      members.forEach(code => {
+        const icao = String(code).trim().toUpperCase();
+        if (airportCodes.has(icao) && !targetGroup.airports.includes(icao)) targetGroup.airports.push(icao);
+      });
+    }
+    ensureAirportGroupMembership();
+    saveState();
+    render();
+    closeSettings();
+    if (addedCodes.length) Promise.all(addedCodes.map(icao => refreshAirport(icao, { renderStart: false, renderFinish: false }))).then(() => renderCards());
+    showStatus(`Added ${addedCodes.length} airport${addedCodes.length === 1 ? '' : 's'} from ${name}; existing cards and groups were kept.`);
+  } catch (error) {
+    status.textContent = error.message || `Could not add ${name}.`;
+  }
 }
 
 async function checkForUpdates() {
@@ -663,8 +749,19 @@ function handleSearch(event) {
 }
 
 function addAirport(icao) {
-  if (state.airports.some(item => item.icao === icao)) {
-    showStatus(`${icao} is already in your briefing.`);
+  const existingAirport = state.airports.find(item => item.icao === icao);
+  if (existingAirport) {
+    const activeGroup = state.groups.find(group => group.id === state.activeGroup);
+    if (activeGroup && !activeGroup.airports.includes(icao)) {
+      activeGroup.airports.push(icao);
+      saveState();
+      render();
+      showStatus(`${icao} added to ${activeGroup.name}.`);
+      return true;
+    }
+    showStatus(activeGroup
+      ? `${icao} is already in ${activeGroup.name}.`
+      : `${icao} is already in your briefing.`);
     return false;
   }
   state.airports.push({ icao });
@@ -1860,11 +1957,10 @@ function updateAirportGroupMembership(input) {
     group.airports.push(icao);
   }
   saveState();
-  renderSidebar();
-  const card = input.closest('.airport-card');
-  const count = state.groups.filter(item => item.airports.includes(icao)).length;
-  card.querySelector('.group-membership summary').textContent = `Groups ${count}`;
-  if (!input.checked && state.activeGroup === groupId) renderCards();
+  // Refresh the card's membership checkboxes and the tab counts together.
+  // A card can belong to multiple groups, so do not treat checking one group
+  // as moving it out of whichever group was previously selected.
+  render();
 }
 
 function reorderVisibleAirports(sourceIcao, targetIcao) {

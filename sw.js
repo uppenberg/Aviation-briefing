@@ -7,6 +7,7 @@ const APP_SHELL = [
   './version.js',
   './styles.css',
   './app.js',
+  './presets/index.json',
   './manifest.json',
   './icon.svg'
 ];
@@ -15,6 +16,17 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => cache.addAll(APP_SHELL))
+      .then(async () => {
+        const cache = await caches.open(CACHE_NAME);
+        const response = await cache.match('./presets/index.json');
+        const catalog = response ? await response.json().catch(() => ({})) : {};
+        const files = Array.isArray(catalog.presets) ? catalog.presets
+          .map(preset => preset?.file)
+          .filter(file => typeof file === 'string' && /^[A-Za-z0-9_-]+\.json$/.test(file)) : [];
+        await Promise.all(files.map(file => cache.add(`./presets/${file}`).catch(error => {
+          console.warn(`Could not cache preset ${file}:`, error);
+        })));
+      })
       .then(() => self.skipWaiting())
   );
 });

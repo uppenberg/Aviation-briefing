@@ -1,0 +1,6 @@
+{
+  "presets": [
+    { "name": "Sveg", "file": "Sveg.json" }
+    { "name": "Umeå", "file": "umea.json" }
+  ]
+}

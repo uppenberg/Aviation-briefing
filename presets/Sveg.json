@@ -1,0 +1,53 @@
+{
+  "format": "aviation-briefing-saved-inputs",
+  "version": 1,
+  "exportedAt": "2026-10-14T16:37:59.869Z",
+  "airports": [
+    "ESND",
+    "ESKM",
+    "ESSA",
+    "ESSB",
+    "ESKN",
+    "ESOK",
+    "ESOE",
+    "ESNZ",
+    "ESNN",
+    "ESSL",
+    "ESSD",
+    "ESSP",
+    "ESOW",
+    "ESKS",
+    "ENRO",
+    "ENVA"
+  ],
+  "groups": [
+    {
+      "id": "group-1791924816118-5dkj7",
+      "name": "Sveg",
+      "color": "#e22828",
+      "airports": [
+        "ESND",
+        "ESKM",
+        "ESSA",
+        "ESSB",
+        "ESKN",
+        "ESOK",
+        "ESOE",
+        "ESNZ",
+        "ESNN",
+        "ESSL",
+        "ESSD",
+        "ESSP",
+        "ESOW",
+        "ESKS",
+        "ENRO",
+        "ENVA"
+      ]
+    }
+  ],
+  "activeGroup": null,
+  "nearby": {
+    "radiusNm": 100,
+    "destinationIcao": "ESSA"
+  }
+}

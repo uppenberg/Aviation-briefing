@@ -74,6 +74,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .backup-section { margin-top: 15px; }
 .update-reload { margin-top: 10px; }
 .backup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.preset-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.preset-button { min-height: 34px; }
 .settings-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .settings-export { margin-right: auto; }
 .refresh-all > span[aria-hidden="true"] { margin-right: 6px; color: var(--accent); font-size: 16px; }
