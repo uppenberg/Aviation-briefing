@@ -427,13 +427,10 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
 
-function formatWeatherMarkup(raw, product = 'metar') {
+function formatWeatherMarkup(raw, product = 'metar', airport = null) {
   let html = escapeHtml(raw);
-  html = html.replace(/\b((?:\d{3}|VRB)\d{2,3})(G(\d{2,3}))KT\b/g, (match, base, gustPart, gustValue) => {
-    return Number(gustValue) > 25
-      ? `${base}<span style="color:#e6ca62;font-weight:700">${gustPart}</span>KT`
-      : match;
-  });
+  html = html.replace(/\b(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?KT\b/g, (match, direction, speed, gust) =>
+    formatCrosswindWind(match, direction, speed, gust || speed, airport));
   const visibilityColor = value => product === 'metar'
     ? value < 400 ? '#ff55dc' : value <= 549 ? '#ff6969' : value <= 800 ? '#ffae5c' : value <= 1400 ? '#e6ca62' : '#70dfa3'
     : value < 550 ? '#ff55dc' : value < 1400 ? '#ff6969' : value < 2300 ? '#ffae5c' : '#70dfa3';
@@ -461,10 +458,10 @@ function formatWeatherMarkup(raw, product = 'metar') {
   return html;
 }
 
-function formatTafForFlightWindow(raw) {
+function formatTafForFlightWindow(raw, airport) {
   const info = getPossibleAlternateWindow();
   const slices = getTafWindowSlices(raw, info);
-  if (!slices.length) return formatWeatherMarkup(raw, 'taf');
+  if (!slices.length) return formatWeatherMarkup(raw, 'taf', airport);
   const ranges = slices.filter(slice => slice.highlight).map(slice => ({ start: slice.start, end: slice.end }));
   const baseWind = extractWindForWindow(raw, info).find(wind => wind.source === 'BASE');
   if (baseWind) {
@@ -484,12 +481,32 @@ function formatTafForFlightWindow(raw) {
   let cursor = 0;
   for (const range of ranges) {
     if (range.start < cursor) continue;
-    html += formatWeatherMarkup(raw.slice(cursor, range.start), 'taf');
-    html += `<mark class="taf-flight-window" title="TAF period or wind group applicable during DEP–ARR">${formatWeatherMarkup(raw.slice(range.start, range.end), 'taf')}</mark>`;
+    html += formatWeatherMarkup(raw.slice(cursor, range.start), 'taf', airport);
+    html += `<mark class="taf-flight-window" title="TAF period or wind group applicable during the selected assessment window">${formatWeatherMarkup(raw.slice(range.start, range.end), 'taf', airport)}</mark>`;
     cursor = range.end;
   }
-  html += formatWeatherMarkup(raw.slice(cursor), 'taf');
+  html += formatWeatherMarkup(raw.slice(cursor), 'taf', airport);
   return html;
+}
+
+function formatCrosswindWind(windText, direction, speed, gust, airport) {
+  const crosswind = getMaximumCrosswindComponent(direction, Number(speed), Number(gust), airport);
+  if (crosswind === null) return windText;
+  const color = crosswind > 25 ? '#ff6969' : crosswind >= 20 ? '#ffae5c' : crosswind >= 14 ? '#e6ca62' : '#70dfa3';
+  return `<span style="color:${color};font-weight:700" title="Maximum runway crosswind component including gusts: ${crosswind} kt">${windText}</span>`;
+}
+
+function getMaximumCrosswindComponent(direction, speed, gust, airport) {
+  const windDirection = direction === 'VRB' ? null : Number(direction);
+  const maxWind = Math.max(speed || 0, gust || 0);
+  const runways = (airport?.runways || []).filter(runway => runway.headingDegT !== null && runway.headingDegT !== undefined && Number.isFinite(Number(runway.headingDegT)));
+  if (!runways.length) return null;
+  if (windDirection === null) return maxWind;
+  return Math.max(...runways.map(runway => {
+    const heading = Number(runway.headingDegT);
+    const angle = ((windDirection - heading + 540) % 360) - 180;
+    return Math.abs(Math.round(maxWind * Math.sin(angle * Math.PI / 180)));
+  }));
 }
 
 function showStatus(message, isError = false) {
@@ -612,7 +629,10 @@ function renderCards() {
     openNotamPanel(button.dataset.notamAirport, button.dataset.notamType);
   }));
   document.getElementById('nearby-taf').classList.toggle('active', state.nearbyMode);
-  document.getElementById('nearby-taf').title = `Find possible alternates within ${state.nearbyRadiusNm} NM`;
+  document.getElementById('nearby-icon').textContent = state.nearbyMode ? '←' : '⌖';
+  document.getElementById('nearby-label-full').textContent = state.nearbyMode ? 'Back to Airports' : 'Nearby Possible Alternates';
+  document.getElementById('nearby-label-short').textContent = state.nearbyMode ? 'Airports' : 'Nearby';
+  document.getElementById('nearby-taf').title = state.nearbyMode ? 'Return to your airport cards' : `Find possible alternates within ${state.nearbyRadiusNm} NM`;
   document.getElementById('nearby-destination-form').hidden = !state.nearbyMode;
   empty.classList.toggle('visible', !state.nearbyMode && airports.length === 0);
   if (state.nearbyMode) {
@@ -812,11 +832,11 @@ function renderCard(airport, nearby = false) {
       <div class="card-actions">${cardActions}</div>
     </header>
     <section class="weather-block">
-      ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw) : escapeHtml(metarText), metar.error ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null)}
+      ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw, 'metar', airport) : escapeHtml(metarText), metar.error ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null)}
       ${renderWeatherRunwayPanel(airport, 'metar')}
     </section>
     <section class="weather-block taf-block">
-      ${renderWeatherToggle(airport.icao, 'taf', 'TAF', taf.time, taf.raw ? formatTafForFlightWindow(taf.raw) : escapeHtml(tafText), taf.error ? 'error' : taf.raw ? '' : 'placeholder', taf.raw ? getWeatherConditionColors(taf.raw, 'taf') : null, tafExpired ? '<span class="taf-expired" title="TAF validity period has ended">[EXPIRED]</span>' : '')}
+      ${renderWeatherToggle(airport.icao, 'taf', 'TAF', taf.time, taf.raw ? formatTafForFlightWindow(taf.raw, airport) : escapeHtml(tafText), taf.error ? 'error' : taf.raw ? '' : 'placeholder', taf.raw ? getWeatherConditionColors(taf.raw, 'taf') : null, tafExpired ? '<span class="taf-expired" title="TAF validity period has ended">[EXPIRED]</span>' : '')}
       ${renderWeatherRunwayPanel(airport, 'taf')}
       ${renderAlternateAssessment(airport)}
     </section>

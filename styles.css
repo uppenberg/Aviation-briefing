@@ -76,7 +76,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .backup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .settings-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .settings-export { margin-right: auto; }
-.refresh-all span { margin-right: 6px; color: var(--accent); font-size: 16px; }
+.refresh-all > span[aria-hidden="true"] { margin-right: 6px; color: var(--accent); font-size: 16px; }
 .flight-times { display: flex; align-items: center; gap: 16px; min-height: 54px; padding: 8px clamp(20px, 5vw, 76px); border-bottom: 1px solid #23323d; background: #121c25; }
 .flight-times-title { color: #7d909b; font: 9px var(--mono); letter-spacing: .12em; }
 .flight-times label { display: inline-flex; align-items: center; gap: 7px; color: #aab8be; font: 10px var(--mono); }
@@ -93,7 +93,7 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .airport-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 16px; align-items: start; }
 .airport-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 7px 25px #050b1020; animation: card-in .25s ease both; }
 @keyframes card-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-.card-head { display: flex; align-items: center; gap: 12px; min-height: 75px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
+.card-head { display: flex; align-items: center; gap: 9px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .drag-handle { flex: 0 0 auto; width: 20px; padding: 0; border: 0; background: transparent; color: #738692; cursor: grab; font-size: 19px; line-height: 1; letter-spacing: -4px; }
 .drag-handle:hover { color: var(--accent); }
 .drag-handle:active { cursor: grabbing; }
@@ -101,8 +101,8 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .airport-card.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px #78d4bd55, 0 7px 25px #050b1020; }
 .card-select { flex: 0 0 auto; width: 15px; height: 15px; accent-color: #67cbb1; cursor: pointer; }
 .airport-ident { min-width: 0; flex: 1; }
-.airport-code { margin: 0; font: 600 21px var(--display); letter-spacing: .04em; }
-.alternate-badge { display: inline-block; margin-left: 6px; padding: 3px 5px; border: 1px solid #37557d; border-radius: 4px; background: #162c49; color: #a9c9ff; font: 500 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; }
+.airport-code { margin: 0; font: 600 19px var(--display); letter-spacing: .04em; }
+.alternate-badge { display: inline-block; margin-left: 6px; padding: 3px 6px; border: 1px solid #6898d7; border-radius: 4px; background: #274f83; color: #f0f6ff; font: 600 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; box-shadow: 0 0 0 1px #0a1522; }
 .notam-badge { display: inline-block; margin-left: 6px; padding: 3px 5px; border: 1px solid #5a4d35; border-radius: 4px; background: rgba(185, 133, 58, .16); color: #edca88; font: 500 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; cursor: pointer; }
 .notam-badge:hover { border-color: #9b7a43; background: rgba(185, 133, 58, .25); }
 .notam-overlay { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 20px; background: #03090dcc; backdrop-filter: blur(3px); }
@@ -133,17 +133,17 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .taf-expired { color: #ff6969; font: 600 9px var(--mono); letter-spacing: .04em; }
 .weather-condition { display: inline-block; flex: 0 0 18px; width: 18px; height: 18px; border: 1px solid #17232b; border-radius: 50%; background: linear-gradient(to bottom, var(--ceiling-color) 0 50%, var(--visibility-color) 50% 100%); box-shadow: 0 0 0 1px #60717b88; }
 .weather-time { color: #71818b; font: 9px var(--mono); }
-.weather-text { display: block; margin: 0; overflow-wrap: anywhere; color: #e4ebed; font: 11px/1.75 var(--mono); }
+.weather-text { display: block; margin: 0; overflow-wrap: anywhere; color: #e4ebed; font: 13px/1.65 var(--mono); }
 .weather-text.placeholder { color: #71818b; font-family: var(--sans); font-style: italic; }
 .weather-text.error { color: #dca386; }
 .wind-panel { margin: 11px -15px -15px; padding: 10px 15px 13px; border-top: 1px solid #263640; background: #111a21; }
 .runway-group-title { margin: 11px 0 5px; color: #b5c3c8; font: 9px var(--mono); letter-spacing: .08em; }
-.runway-result { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid #22313a; color: #d4dfe2; font: 10px var(--mono); }
+.runway-result { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid #22313a; color: #d4dfe2; font: 11px var(--mono); }
 .runway-result.best { color: #a9e4d4; }
 .best-runway-badge { display: inline-block; margin-left: 5px; padding: 2px 4px; border-radius: 3px; color: #10221e; background: #8dd5bc; font-size: 8px; letter-spacing: .06em; }
 .runway-result span:last-child { text-align: right; }
 .runway-empty { margin: 0; color: #82929c; font-size: 10px; line-height: 1.6; }
-.runway-result small { color: #72838c; font-size: 9px; }
+.runway-result small { color: #8c9ca4; font-size: 10px; }
 .runway-result .runway-wind-used { display: block; margin-top: 3px; color: #8c9ca4; }
 .taf-flight-window { padding: 1px 2px; border-radius: 3px; color: inherit; background: rgba(103, 203, 177, .40); box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .alternate-assessment { margin: 7px 0 0; padding: 7px 9px; border-radius: 5px; font-size: 10px; line-height: 1.5; }
