@@ -20,6 +20,7 @@ const state = {
   activeGroup: null,
   departureTime: '',
   arrivalTime: '',
+  arrivalTimeAuto: false,
   selected: new Set(),
   sidebarOpen: false,
   busy: new Set(),
@@ -116,6 +117,7 @@ function init() {
   document.getElementById('clear-times').addEventListener('click', () => {
     state.departureTime = '';
     state.arrivalTime = '';
+    state.arrivalTimeAuto = false;
     saveState();
     renderCards();
   });
@@ -214,6 +216,7 @@ function loadState() {
     state.activeGroup = saved.activeGroup || null;
     state.departureTime = typeof saved.departureTime === 'string' ? saved.departureTime : '';
     state.arrivalTime = typeof saved.arrivalTime === 'string' ? saved.arrivalTime : '';
+    state.arrivalTimeAuto = saved.arrivalTimeAuto === true && Boolean(state.arrivalTime);
     state.nearbyRadiusNm = Number.isFinite(saved.nearbyRadiusNm) && saved.nearbyRadiusNm >= 1 && saved.nearbyRadiusNm <= 1000
       ? saved.nearbyRadiusNm : DEFAULT_NEARBY_RADIUS_NM;
     state.nearbyDestination = typeof saved.nearbyDestination === 'string' && /^[A-Z]{4}$/.test(saved.nearbyDestination) ? saved.nearbyDestination : '';
@@ -237,6 +240,7 @@ function saveState() {
     activeGroup: state.activeGroup,
     departureTime: state.departureTime,
     arrivalTime: state.arrivalTime,
+    arrivalTimeAuto: state.arrivalTimeAuto,
     nearbyRadiusNm: state.nearbyRadiusNm,
     nearbyDestination: state.nearbyDestination
     }));
@@ -385,10 +389,6 @@ function exportSavedInputs() {
     airports: state.airports.map(airport => airport.icao),
     groups: state.groups.map(group => ({ id: group.id, name: group.name, color: group.color || '#203735', airports: [...group.airports] })),
     activeGroup: state.activeGroup,
-    flightTimesUtc: {
-      departure: state.departureTime,
-      arrival: state.arrivalTime
-    },
     nearby: {
       radiusNm: state.nearbyRadiusNm,
       destinationIcao: state.nearbyDestination
@@ -409,7 +409,7 @@ async function importSavedInputs(event) {
   const input = event.currentTarget;
   const file = input.files?.[0];
   if (!file) return;
-  if (!window.confirm('Importing this backup will replace your saved airports, groups, flight times, and Nearby settings. Continue?')) {
+  if (!window.confirm('Importing this backup will replace your saved airports, groups, and Nearby settings. DEP and ARR times will stay as currently saved on this device. Continue?')) {
     input.value = '';
     return;
   }
@@ -431,15 +431,6 @@ async function importSavedInputs(event) {
       const color = typeof group.color === 'string' && /^#[0-9a-f]{6}$/i.test(group.color) ? group.color : '#203735';
       return { id, name: group.name.trim().slice(0, 48), color, airports };
     }).filter(group => group.name);
-    const normalizeImportedTime = (value, field) => {
-      if (value === undefined || value === null || value === '') return '';
-      if (typeof value !== 'string') throw new Error(`The ${field} time in this backup is invalid.`);
-      const normalized = normalizeFlightTime(value);
-      if (normalized === null) throw new Error(`The ${field} time in this backup is invalid.`);
-      return normalized;
-    };
-    const departure = normalizeImportedTime(backup.flightTimesUtc?.departure, 'departure');
-    const arrival = normalizeImportedTime(backup.flightTimesUtc?.arrival, 'arrival');
     const radius = backup.nearby?.radiusNm;
     if (radius !== undefined && (!Number.isFinite(radius) || radius < 1 || radius > 1000)) throw new Error('The Nearby radius in this backup is invalid.');
     const destination = typeof backup.nearby?.destinationIcao === 'string'
@@ -450,8 +441,6 @@ async function importSavedInputs(event) {
     state.groups = groups;
     ensureAirportGroupMembership();
     state.activeGroup = groups.some(group => group.id === backup.activeGroup) ? backup.activeGroup : null;
-    state.departureTime = departure;
-    state.arrivalTime = arrival;
     state.nearbyRadiusNm = radius ?? DEFAULT_NEARBY_RADIUS_NM;
     state.nearbyDestination = /^[A-Z]{4}$/.test(destination) ? destination : '';
     state.nearbyMode = false;
@@ -480,8 +469,25 @@ function commitFlightTime(input, stateKey) {
   }
   input.value = normalized;
   state[stateKey] = normalized;
+  if (stateKey === 'departureTime') {
+    if (normalized && (!state.arrivalTime || state.arrivalTimeAuto)) {
+      state.arrivalTime = addFlightHours(normalized, 3);
+      state.arrivalTimeAuto = true;
+    } else if (!normalized && state.arrivalTimeAuto) {
+      state.arrivalTime = '';
+      state.arrivalTimeAuto = false;
+    }
+  } else {
+    state.arrivalTimeAuto = false;
+  }
   saveState();
   renderCards();
+}
+
+function addFlightHours(time, hours) {
+  const [hour, minute] = time.split(':').map(Number);
+  const totalMinutes = (hour * 60 + minute + hours * 60) % (24 * 60);
+  return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
 }
 
 function normalizeFlightTime(value) {

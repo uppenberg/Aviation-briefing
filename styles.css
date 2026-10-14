@@ -222,12 +222,23 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
   .topbar { grid-template-columns: auto 1fr auto; gap: 15px; }
   .brand { grid-column: 2; grid-row: 1; }
   .sidebar-tab { grid-column: 1; grid-row: 1; }
-  .topbar-actions { grid-column: 3; grid-row: 1; }
+  .topbar-actions { grid-column: 3; grid-row: 1; min-width: 0; gap: 6px; }
+  .topbar-actions .button { min-width: 0; padding: 0 8px; font-size: 10px; }
+  .button-label-full { display: none; }
+  .button-label-short { display: inline; }
   .search-wrap { grid-column: 1 / -1; grid-row: 2; }
   .content-area { padding-top: 30px; }
   .flight-times { flex-wrap: wrap; gap: 10px 14px; }
   .flight-times-note { width: 100%; margin-left: 0; }
   .sidebar-scrim.visible { position: fixed; z-index: 19; inset: 0; display: block; background: #02080bb8; }
+}
+@media (min-width: 700px) and (min-height: 600px) and (max-width: 1049px) {
+  .airport-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 581px) and (max-width: 699px) {
+  .topbar { grid-template-columns: auto 1fr; }
+  .topbar-actions { grid-column: 1 / -1; grid-row: 3; justify-content: stretch; }
+  .topbar-actions .button { flex: 1 1 0; }
 }
 @media (max-width: 580px) {
   .topbar { grid-template-columns: auto 1fr; gap: 13px 10px; padding: 12px 14px; }
