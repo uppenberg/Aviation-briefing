@@ -190,6 +190,12 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .create-group { width: 100%; }
 .group-list { display: grid; gap: 7px; margin-top: 18px; overflow-y: auto; }
 .group-item { display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 10px; border: 1px solid #2b3b46; border-radius: 8px; background: color-mix(in srgb, var(--group-color, #203735) 19%, #192732); color: #b6c2c8; cursor: pointer; text-align: left; transition: border-color .16s ease, background .16s ease; }
+.group-item { position: relative; isolation: isolate; overflow: hidden; }
+.group-item::before { position: absolute; z-index: -1; inset: 0; border-radius: inherit; content: ""; opacity: .15; pointer-events: none; }
+.group-item.flag-sweden::before { background: linear-gradient(90deg, transparent 0 29%, #f5cc45 29% 40%, transparent 40%), linear-gradient(0deg, transparent 0 40%, #f5cc45 40% 61%, transparent 61%), #1769a6; }
+.group-item.flag-finland::before { background: linear-gradient(90deg, transparent 0 29%, #2369a8 29% 40%, transparent 40%), linear-gradient(0deg, transparent 0 40%, #2369a8 40% 61%, transparent 61%), #f2f5f5; }
+.group-item.flag-norway::before { background: linear-gradient(90deg, transparent 0 32%, #153b77 32% 37%, transparent 37%), linear-gradient(0deg, transparent 0 44%, #153b77 44% 56%, transparent 56%), linear-gradient(90deg, transparent 0 29%, #fff 29% 40%, transparent 40%), linear-gradient(0deg, transparent 0 40%, #fff 40% 60%, transparent 60%), #c83342; }
+.group-item > * { position: relative; z-index: 1; }
 .group-item:hover { border-color: color-mix(in srgb, var(--group-color, #405460) 58%, #405460); background: color-mix(in srgb, var(--group-color, #203735) 25%, #1d2e39); }
 .group-item.active { border-color: color-mix(in srgb, var(--group-color, #3b665e) 65%, #3b665e); background: color-mix(in srgb, var(--group-color, #203735) 32%, #203735); color: #e1ece8; }
 .group-item.builtin-group { border-style: solid; }

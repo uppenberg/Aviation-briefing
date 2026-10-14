@@ -237,14 +237,15 @@ function loadState() {
     state.groups.forEach(group => { group.airports = Array.isArray(group.airports) ? [...new Set(group.airports.filter(icao => state.airports.some(item => item.icao === icao)))] : []; });
     ensureBuiltinGroups();
     ensureAirportGroupMembership();
-    state.activeGroup = saved.activeGroup || null;
+    const defaultGroupId = ensureDefaultGeneralGroup();
+    state.activeGroup = saved.activeGroup || defaultGroupId;
     state.departureTime = typeof saved.departureTime === 'string' ? saved.departureTime : '';
     state.arrivalTime = typeof saved.arrivalTime === 'string' ? saved.arrivalTime : '';
     state.arrivalTimeAuto = saved.arrivalTimeAuto === true && Boolean(state.arrivalTime);
     state.nearbyRadiusNm = Number.isFinite(saved.nearbyRadiusNm) && saved.nearbyRadiusNm >= 1 && saved.nearbyRadiusNm <= 1000
       ? saved.nearbyRadiusNm : DEFAULT_NEARBY_RADIUS_NM;
     state.nearbyDestination = typeof saved.nearbyDestination === 'string' && /^[A-Z]{4}$/.test(saved.nearbyDestination) ? saved.nearbyDestination : '';
-    if (state.activeGroup && !state.groups.some(group => group.id === state.activeGroup)) state.activeGroup = null;
+    if (!state.groups.some(group => group.id === state.activeGroup)) state.activeGroup = defaultGroupId;
     saveState();
   } catch (error) {
     console.warn('Could not load saved briefing:', error);
@@ -299,8 +300,24 @@ function ensureAirportGroupMembership() {
   }
 }
 
+function ensureDefaultGeneralGroup() {
+  let general = state.groups.find(group => !isBuiltinGroup(group.id) && group.name.trim().toLowerCase() === 'general');
+  if (!general) {
+    general = { id: createGroupId(), name: 'General', airports: [] };
+    state.groups.push(general);
+  }
+  return general.id;
+}
+
 function isBuiltinGroup(groupId) {
   return BUILTIN_GROUPS.some(group => group.id === groupId);
+}
+
+function builtinFlagClass(groupId) {
+  if (groupId === ALL_SWEDEN_GROUP_ID) return 'flag-sweden';
+  if (groupId === ALL_FINLAND_GROUP_ID) return 'flag-finland';
+  if (groupId === ALL_NORWAY_GROUP_ID) return 'flag-norway';
+  return '';
 }
 
 function ensureBuiltinGroups() {
@@ -575,8 +592,9 @@ async function importSavedInputs(event) {
     state.groups = groups;
     ensureBuiltinGroups();
     ensureAirportGroupMembership();
+    const defaultGroupId = ensureDefaultGeneralGroup();
     state.tabOrder = Array.isArray(backup.tabOrder) ? backup.tabOrder.filter(id => typeof id === 'string') : [];
-    state.activeGroup = groups.some(group => group.id === backup.activeGroup) ? backup.activeGroup : null;
+    state.activeGroup = state.groups.some(group => group.id === backup.activeGroup) ? backup.activeGroup : defaultGroupId;
     state.nearbyRadiusNm = radius ?? DEFAULT_NEARBY_RADIUS_NM;
     state.nearbyDestination = /^[A-Z]{4}$/.test(destination) ? destination : '';
     state.nearbyMode = false;
@@ -890,9 +908,7 @@ function render() {
 
 function renderSidebar() {
   const list = document.getElementById('group-list');
-  const allActive = !state.activeGroup;
-  const all = `<div class="group-item ${allActive ? 'active' : ''}" data-reorder-group="all"><span class="group-drag-handle" title="Drag to reorder tabs" aria-label="Drag All airports to reorder">⠿</span><button class="group-item-name" role="tab" aria-controls="airport-grid" aria-selected="${allActive}" data-group="all" title="Show all airports">All airports</button><span class="group-item-count">${state.airports.filter(item => !item.builtinOnly).length}</span></div>`;
-  const groups = state.groups.map(group => `<div class="group-item ${state.activeGroup === group.id ? 'active' : ''} ${isBuiltinGroup(group.id) ? 'builtin-group' : ''}" data-group-row="${escapeHtml(group.id)}" data-reorder-group="${escapeHtml(group.id)}" style="--group-color:${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}">
+  const groups = state.groups.map(group => `<div class="group-item ${state.activeGroup === group.id ? 'active' : ''} ${isBuiltinGroup(group.id) ? `builtin-group ${builtinFlagClass(group.id)}` : ''}" data-group-row="${escapeHtml(group.id)}" data-reorder-group="${escapeHtml(group.id)}" style="--group-color:${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}">
       <span class="group-drag-handle" title="Drag to reorder tabs" aria-label="Drag ${escapeHtml(group.name)} to reorder">⠿</span>
       <button class="group-item-name" role="tab" aria-controls="airport-grid" aria-selected="${state.activeGroup === group.id}" data-group="${escapeHtml(group.id)}" title="Show group">${escapeHtml(group.name)}</button>
       <span class="group-item-count" data-group-count="${escapeHtml(group.id)}">${group.airports.length}</span>
@@ -900,10 +916,10 @@ function renderSidebar() {
       <button class="icon-button group-rename" data-rename-group="${escapeHtml(group.id)}" aria-label="Rename group ${escapeHtml(group.name)}" title="Rename group">✎</button>
       <button class="icon-button group-delete" data-delete-group="${escapeHtml(group.id)}" aria-label="Delete group ${escapeHtml(group.name)}" title="Delete group">×</button>`}
     </div>`);
-  const tabMap = new Map([['all', all], ...state.groups.map((group, index) => [group.id, groups[index]])]);
-  list.innerHTML = getSidebarTabIds().map(id => tabMap.get(id)).filter(Boolean).join('') || all;
+  const tabMap = new Map(state.groups.map((group, index) => [group.id, groups[index]]));
+  list.innerHTML = getSidebarTabIds().map(id => tabMap.get(id)).filter(Boolean).join('');
   list.querySelectorAll('[data-group]').forEach(button => button.addEventListener('click', () => {
-    state.activeGroup = button.dataset.group === 'all' ? null : button.dataset.group;
+    state.activeGroup = button.dataset.group;
     saveState();
     render();
     if (window.innerWidth < 1050) setSidebar(false);
@@ -1104,10 +1120,12 @@ async function findNearbyTafAirports(options = {}) {
           if (isCachedReport(taf)) {
             const report = { ...taf, retrievedAt: Date.now() };
             if (!isTafExpired(report) && assessPossibleAlternate(report.raw, assessmentWindow)?.possible) {
-              const [metarResult, runwayResult, variationResult] = await Promise.allSettled([
+              const savedAirport = state.airports.find(item => item.icao === airport.icao);
+              const [metarResult, runwayResult, variationResult, notamResult] = await Promise.allSettled([
                 fetchFreshWeather(airport.icao, 'metar'),
                 fetchOurAirportsRunways(airport.icao),
-                fetchOurAirportsVariation(airport.icao)
+                fetchOurAirportsVariation(airport.icao),
+                isCachedNotams(savedAirport?.notams) ? Promise.resolve(savedAirport.notams) : fetchWorkerNotams(airport.icao)
               ]);
               const metar = metarResult.status === 'fulfilled' && isCachedReport(metarResult.value)
                 ? { ...metarResult.value, retrievedAt: Date.now() }
@@ -1116,7 +1134,7 @@ async function findNearbyTafAirports(options = {}) {
                 ...airport,
                 taf: report,
                 metar,
-                notams: state.airports.find(item => item.icao === airport.icao)?.notams,
+                notams: notamResult.status === 'fulfilled' ? { ...notamResult.value, retrievedAt: Date.now() } : savedAirport?.notams,
                 runways: runwayResult.status === 'fulfilled' ? runwayResult.value : [],
                 magneticVariation: variationResult.status === 'fulfilled' ? variationResult.value : null
               });
@@ -2181,7 +2199,7 @@ function reorderGroups(sourceGroupId, targetGroupId) {
 }
 
 function getSidebarTabIds() {
-  const valid = new Set(['all', ...state.groups.map(group => group.id)]);
+  const valid = new Set(state.groups.map(group => group.id));
   const order = state.tabOrder.filter(id => valid.has(id));
   for (const id of valid) if (!order.includes(id)) order.push(id);
   return order;
