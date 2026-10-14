@@ -47,18 +47,21 @@ self.addEventListener('fetch', event => {
   if (request.method === 'GET' && url.origin === 'https://aro.lfv.se' && url.pathname === '/tor/nswc2aro.gif') {
     event.respondWith((async () => {
       const cache = await caches.open(NSWC_CACHE_NAME);
+      const entries = await cache.keys();
+      const previousKey = entries.find(key => key.url !== request.url);
+      const previousImage = previousKey ? await cache.match(previousKey) : null;
       const cached = await cache.match(request);
-      if (cached) return cached;
+      if (cached && !url.searchParams.has('refresh')) return cached;
       try {
         const response = await fetch(request);
-        if (response.ok || response.type === 'opaque') {
-          await cache.put(request, response.clone());
-          const oldEntries = (await cache.keys()).filter(key => key.url !== request.url);
-          await Promise.all(oldEntries.map(key => cache.delete(key)));
-        }
+        if (!response.ok && response.type !== 'opaque') return previousImage || response;
+        // Keep the previous chart until the refreshed image is safely stored.
+        await cache.put(request, response.clone());
+        const oldEntries = (await cache.keys()).filter(key => key.url !== request.url);
+        await Promise.all(oldEntries.map(key => cache.delete(key)));
         return response;
       } catch {
-        return cached || Response.error();
+        return previousImage || cached || Response.error();
       }
     })());
     return;

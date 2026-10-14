@@ -5,10 +5,24 @@ const NSWC_IMAGE_URL = 'https://aro.lfv.se/tor/nswc2aro.gif?814183';
 const NSWC_SAVED_URL_KEY = 'aviation-briefing-nswc-image-url';
 const RUNWAY_CACHE_PREFIX = 'aviation-briefing-runways-';
 const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const METAR_REFRESH_AGE_MS = 20 * 60 * 1000;
+const TAF_REFRESH_AGE_MS = 3 * 60 * 60 * 1000;
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
 const OURAIRPORTS_NAVAIDS_URL = 'https://davidmegginson.github.io/ourairports-data/navaids.csv';
 const OURAIRPORTS_AIRPORTS_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
 const DEFAULT_NEARBY_RADIUS_NM = 100;
+const ALL_SWEDEN_GROUP_ID = 'builtin-all-sweden';
+const ALL_FINLAND_GROUP_ID = 'builtin-all-finland';
+const ALL_NORWAY_GROUP_ID = 'builtin-all-norway';
+const SWEDEN_METAR_ICAOS = `ESCF ESCM ESDF ESGG ESGJ ESGP ESGT ESIA ESIB ESKM ESKN ESKS ESMK ESMQ ESMS ESMT ESMV ESMX ESND ESNG ESNK ESNL ESNN ESNO ESNQ ESNS ESNU ESNV ESNX ESNZ ESOE ESOH ESOK ESOW ESPA ESPE ESSA ESSB ESSD ESSL ESSP ESST ESSU ESSV ESTA ESTL ESUP ESUT`.split(' ').sort();
+const FINLAND_AD2_ICAOS = `EFET EFHA EFHK EFIV EFJO EFJY EFKE EFKI EFKK EFKS EFKT EFKU EFLP EFMA EFMI EFOU EFPO EFRO EFSA EFSI EFTP EFTU EFUT EFVA`.split(' ').sort();
+const NORWAY_AD2_ICAOS = `ENAL ENAN ENAS ENAT ENBL ENBN ENBO ENBR ENBS ENBV ENCN ENDU ENEG ENEV ENFG ENFL ENGK ENGM ENHD ENHF ENHK ENHV ENKB ENKJ ENKR ENLK ENMH ENML ENMS ENNA ENNM ENNO ENOL ENOV ENRA ENRE ENRM ENRO ENRS ENSB ENSD ENSG ENSH ENSK ENSO ENSR ENSS ENST ENTC ENTO ENVA ENVD ENZV ENRY`.split(' ').sort();
+const BUILTIN_GROUPS = [
+  { id: ALL_SWEDEN_GROUP_ID, name: 'All Sweden', color: '#31566f', airports: SWEDEN_METAR_ICAOS },
+  { id: ALL_FINLAND_GROUP_ID, name: 'All Finland', color: '#385b75', airports: FINLAND_AD2_ICAOS },
+  { id: ALL_NORWAY_GROUP_ID, name: 'All Norway', color: '#6f3c46', airports: NORWAY_AD2_ICAOS }
+];
+const BUILTIN_AIRPORT_ICAOS = new Set(BUILTIN_GROUPS.flatMap(group => group.airports));
 let airportCsvPromise = null;
 let runwayCsvPromise = null;
 let navaidCsvPromise = null;
@@ -17,6 +31,7 @@ let lastNotamRequestAt = 0;
 const state = {
   airports: [],
   groups: [],
+  tabOrder: [],
   activeGroup: null,
   departureTime: '',
   arrivalTime: '',
@@ -41,9 +56,7 @@ document.addEventListener('DOMContentLoaded', init);
 function init() {
   document.getElementById('app-version').textContent = `v${APP_VERSION}`;
   if (window.isSecureContext && 'serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(error => {
-      console.warn('Could not register service worker:', error);
-    });
+    checkForUpdates({ automatic: true });
   }
   loadState();
   document.getElementById('dep-time').value = state.departureTime;
@@ -88,6 +101,10 @@ function init() {
   });
   document.getElementById('check-updates').addEventListener('click', checkForUpdates);
   document.getElementById('reload-for-update').addEventListener('click', () => window.location.reload());
+  document.getElementById('install-update').addEventListener('click', () => window.location.reload());
+  document.getElementById('dismiss-update').addEventListener('click', () => {
+    document.getElementById('app-update-prompt').hidden = true;
+  });
   document.getElementById('export-saved-inputs').addEventListener('click', exportSavedInputs);
   document.getElementById('import-saved-inputs').addEventListener('click', () => {
     const input = document.getElementById('import-saved-inputs-file');
@@ -210,12 +227,15 @@ function loadState() {
       .filter(item => item && /^[A-Z]{4}$/.test(item.icao))
       .map(item => ({
         icao: item.icao,
+        ...(item.builtinOnly === true || item.swedenBuiltinOnly === true ? { builtinOnly: true } : {}),
         ...(isCachedReport(item.metar) ? { metar: restoreCachedReport(item.metar) } : {}),
         ...(isCachedReport(item.taf) ? { taf: restoreCachedReport(item.taf) } : {}),
         ...(isCachedNotams(item.notams) ? { notams: item.notams } : {})
       })) : [];
     state.groups = Array.isArray(saved.groups) ? saved.groups.filter(group => group && typeof group.id === 'string' && typeof group.name === 'string') : [];
+    state.tabOrder = Array.isArray(saved.tabOrder) ? saved.tabOrder.filter(id => typeof id === 'string') : [];
     state.groups.forEach(group => { group.airports = Array.isArray(group.airports) ? [...new Set(group.airports.filter(icao => state.airports.some(item => item.icao === icao)))] : []; });
+    ensureBuiltinGroups();
     ensureAirportGroupMembership();
     state.activeGroup = saved.activeGroup || null;
     state.departureTime = typeof saved.departureTime === 'string' ? saved.departureTime : '';
@@ -234,13 +254,15 @@ function loadState() {
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    airports: state.airports.map(({ icao, metar, taf, notams }) => ({
+    airports: state.airports.map(({ icao, builtinOnly, metar, taf, notams }) => ({
       icao,
+      ...(builtinOnly ? { builtinOnly: true } : {}),
       ...(isCachedReport(metar) ? { metar: serializeCachedReport(metar) } : {}),
       ...(isCachedReport(taf) ? { taf: serializeCachedReport(taf) } : {}),
       ...(isCachedNotams(notams) ? { notams } : {})
     })),
     groups: state.groups,
+    tabOrder: getSidebarTabIds(),
     activeGroup: state.activeGroup,
     departureTime: state.departureTime,
     arrivalTime: state.arrivalTime,
@@ -265,11 +287,41 @@ function isCachedNotams(notams) {
 }
 
 function ensureAirportGroupMembership() {
-  if (state.airports.length && !state.groups.length) {
-    state.groups.push({ id: createGroupId(), name: 'General', airports: [] });
+  const userAirports = state.airports.filter(airport => !airport.builtinOnly);
+  let userGroups = state.groups.filter(group => !isBuiltinGroup(group.id));
+  if (userAirports.length && !userGroups.length) {
+    const general = { id: createGroupId(), name: 'General', airports: [] };
+    state.groups.push(general);
+    userGroups = [general];
   }
-  for (const airport of state.airports) {
-    if (!state.groups.some(group => group.airports.includes(airport.icao))) state.groups[0]?.airports.push(airport.icao);
+  for (const airport of userAirports) {
+    if (!userGroups.some(group => group.airports.includes(airport.icao))) userGroups[0]?.airports.push(airport.icao);
+  }
+}
+
+function isBuiltinGroup(groupId) {
+  return BUILTIN_GROUPS.some(group => group.id === groupId);
+}
+
+function ensureBuiltinGroups() {
+  for (const definition of BUILTIN_GROUPS) {
+    let group = state.groups.find(item => item.id === definition.id);
+    if (!group) {
+      group = { id: definition.id, name: definition.name, color: definition.color, airports: [] };
+      state.groups.push(group);
+    }
+    group.name = definition.name;
+    group.color = definition.color;
+    group.airports = [...definition.airports];
+    for (const icao of definition.airports) {
+      let airport = state.airports.find(item => item.icao === icao);
+      if (!airport) {
+        airport = { icao, builtinOnly: true };
+        state.airports.push(airport);
+      } else if (state.groups.some(item => !isBuiltinGroup(item.id) && item.airports.includes(icao))) {
+        airport.builtinOnly = false;
+      }
+    }
   }
 }
 
@@ -301,8 +353,6 @@ function openSettings() {
   const input = document.getElementById('nearby-radius');
   input.value = String(state.nearbyRadiusNm);
   overlay.hidden = false;
-  input.focus();
-  input.select();
   loadPresets();
 }
 
@@ -391,58 +441,55 @@ async function addPreset(file, name) {
   }
 }
 
-async function checkForUpdates() {
+async function checkForUpdates({ automatic = false } = {}) {
   const button = document.getElementById('check-updates');
   const status = document.getElementById('update-status');
   const reloadButton = document.getElementById('reload-for-update');
   reloadButton.hidden = true;
   if (!window.isSecureContext || !('serviceWorker' in navigator)) {
-    status.textContent = 'Update checks require the app to be open from its secure website or installed PWA.';
+    if (!automatic) status.textContent = 'Update checks require the app to be open from its secure website or installed PWA.';
     return;
   }
-  button.disabled = true;
-  status.textContent = 'Checking for updates…';
+  if (!automatic) {
+    button.disabled = true;
+    status.textContent = 'Checking for updates…';
+  }
   try {
+    const hadController = Boolean(navigator.serviceWorker.controller);
     const registration = await navigator.serviceWorker.getRegistration() || await navigator.serviceWorker.register('./sw.js');
+    const activeBefore = registration.active;
     let updateFound = Boolean(registration.waiting);
-    let updateActivated = false;
+    let installingWorker = registration.installing;
     registration.addEventListener('updatefound', () => {
       updateFound = true;
-      const worker = registration.installing;
-      if (!worker) return;
-      worker.addEventListener('statechange', () => {
-        if (worker.state === 'activated') updateActivated = true;
-      });
+      installingWorker = registration.installing;
     }, { once: true });
     await registration.update();
-    if (registration.installing && registration.installing !== registration.active) updateFound = true;
-    if (updateFound && !updateActivated && !registration.waiting) {
+    installingWorker ||= registration.installing;
+    if (installingWorker && installingWorker !== activeBefore && !registration.waiting) {
       await Promise.race([
         new Promise(resolve => {
-          const worker = registration.installing;
-          if (!worker) return resolve();
-          if (worker.state === 'activated') { updateActivated = true; return resolve(); }
-          worker.addEventListener('statechange', () => {
-            if (worker.state === 'activated' || worker.state === 'redundant') {
-              updateActivated = worker.state === 'activated';
-              resolve();
-            }
+          if (['activated', 'redundant'].includes(installingWorker.state)) return resolve();
+          installingWorker.addEventListener('statechange', () => {
+            if (['activated', 'redundant'].includes(installingWorker.state)) resolve();
           });
         }),
-        new Promise(resolve => setTimeout(resolve, 8000))
+        new Promise(resolve => setTimeout(resolve, 15000))
       ]);
     }
-    if (updateFound || registration.waiting || updateActivated) {
-      status.textContent = `An update is available. You are currently on v${APP_VERSION}. Reload to load it.`;
+    const updatedWorkerActive = Boolean(hadController && updateFound && registration.active && registration.active !== activeBefore);
+    if (hadController && (registration.waiting || updatedWorkerActive)) {
+      status.textContent = `A new version is ready. Current version: v${APP_VERSION}.`;
       reloadButton.hidden = false;
+      document.getElementById('app-update-prompt').hidden = false;
     } else {
-      status.textContent = `You are using the latest available version (v${APP_VERSION}).`;
+      if (!automatic) status.textContent = `You are using the latest available version (v${APP_VERSION}).`;
     }
   } catch (error) {
-    status.textContent = 'Could not check for updates. Check your internet connection and try again.';
+    if (!automatic) status.textContent = 'Could not check for updates. Check your internet connection and try again.';
     console.warn('Could not check for app updates:', error);
   } finally {
-    button.disabled = false;
+    if (!automatic) button.disabled = false;
   }
 }
 
@@ -472,9 +519,10 @@ function exportSavedInputs() {
     format: 'aviation-briefing-saved-inputs',
     version: 1,
     exportedAt: new Date().toISOString(),
-    airports: state.airports.map(airport => airport.icao),
-    groups: state.groups.map(group => ({ id: group.id, name: group.name, color: group.color || '#203735', airports: [...group.airports] })),
-    activeGroup: state.activeGroup,
+    airports: state.airports.filter(airport => !airport.builtinOnly).map(airport => airport.icao),
+    groups: state.groups.filter(group => !isBuiltinGroup(group.id)).map(group => ({ id: group.id, name: group.name, color: group.color || '#203735', airports: [...group.airports] })),
+    tabOrder: getSidebarTabIds(),
+    activeGroup: isBuiltinGroup(state.activeGroup) ? null : state.activeGroup,
     nearby: {
       radiusNm: state.nearbyRadiusNm,
       destinationIcao: state.nearbyDestination
@@ -525,7 +573,9 @@ async function importSavedInputs(event) {
 
     state.airports = airportCodes.map(icao => ({ icao }));
     state.groups = groups;
+    ensureBuiltinGroups();
     ensureAirportGroupMembership();
+    state.tabOrder = Array.isArray(backup.tabOrder) ? backup.tabOrder.filter(id => typeof id === 'string') : [];
     state.activeGroup = groups.some(group => group.id === backup.activeGroup) ? backup.activeGroup : null;
     state.nearbyRadiusNm = radius ?? DEFAULT_NEARBY_RADIUS_NM;
     state.nearbyDestination = /^[A-Z]{4}$/.test(destination) ? destination : '';
@@ -537,7 +587,8 @@ async function importSavedInputs(event) {
     saveState();
     render();
     closeSettings();
-    if (state.airports.length) refreshAll({ quiet: true });
+    const userAirports = state.airports.filter(airport => !airport.builtinOnly);
+    if (userAirports.length) refreshAirportBatch(userAirports, { quiet: true });
     showStatus('Saved inputs imported.');
   } catch (error) {
     showStatus(error?.message || 'Could not import saved inputs.', true);
@@ -744,8 +795,26 @@ function handleSearch(event) {
     input.focus();
     return;
   }
+  const activeGroup = state.groups.find(group => group.id === state.activeGroup);
+  if (!state.nearbyMode && activeGroup?.airports.includes(icao)) {
+    input.value = '';
+    scrollToAirportCard(icao);
+    showStatus(`${icao} is already in ${activeGroup.name}.`);
+    return;
+  }
   const added = addAirport(icao);
   if (added) input.value = '';
+}
+
+function scrollToAirportCard(icao) {
+  requestAnimationFrame(() => {
+    const card = [...document.querySelectorAll('[data-airport]')].find(element => element.dataset.airport === icao);
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+}
+
+function isAirportInUserBriefing(icao) {
+  return state.airports.some(item => item.icao === icao && !item.builtinOnly);
 }
 
 function addAirport(icao) {
@@ -753,10 +822,19 @@ function addAirport(icao) {
   if (existingAirport) {
     const activeGroup = state.groups.find(group => group.id === state.activeGroup);
     if (activeGroup && !activeGroup.airports.includes(icao)) {
+      if (!isBuiltinGroup(activeGroup.id)) existingAirport.builtinOnly = false;
       activeGroup.airports.push(icao);
       saveState();
       render();
       showStatus(`${icao} added to ${activeGroup.name}.`);
+      return true;
+    }
+    if (existingAirport.builtinOnly && (!activeGroup || isBuiltinGroup(activeGroup.id))) {
+      existingAirport.builtinOnly = false;
+      ensureAirportGroupMembership();
+      saveState();
+      render();
+      showStatus(`${icao} added to your briefing.`);
       return true;
     }
     showStatus(activeGroup
@@ -767,7 +845,7 @@ function addAirport(icao) {
   state.airports.push({ icao });
   ensureAirportGroupMembership();
   const activeGroup = state.groups.find(group => group.id === state.activeGroup);
-  if (activeGroup && !activeGroup.airports.includes(icao)) activeGroup.airports.push(icao);
+  if (activeGroup && !isBuiltinGroup(activeGroup.id) && !activeGroup.airports.includes(icao)) activeGroup.airports.push(icao);
   saveState();
   render();
   showStatus(`${icao} added.`);
@@ -776,6 +854,16 @@ function addAirport(icao) {
 }
 
 function removeAirport(icao) {
+  if (BUILTIN_AIRPORT_ICAOS.has(icao)) {
+    const airport = state.airports.find(item => item.icao === icao);
+    if (airport) airport.builtinOnly = true;
+    state.groups.forEach(group => { if (!isBuiltinGroup(group.id)) group.airports = group.airports.filter(code => code !== icao); });
+    state.selected.delete(icao);
+    ensureAirportGroupMembership();
+    saveState();
+    render();
+    return;
+  }
   state.airports = state.airports.filter(item => item.icao !== icao);
   state.groups.forEach(group => { group.airports = group.airports.filter(code => code !== icao); });
   state.selected.delete(icao);
@@ -784,8 +872,12 @@ function removeAirport(icao) {
 }
 
 function airportsInActiveGroup() {
-  if (!state.activeGroup) return state.airports;
+  if (!state.activeGroup) return state.airports.filter(item => !item.builtinOnly);
   const group = state.groups.find(item => item.id === state.activeGroup);
+  if (group && isBuiltinGroup(group.id)) {
+    const airportByCode = new Map(state.airports.map(airport => [airport.icao, airport]));
+    return group.airports.map(icao => airportByCode.get(icao)).filter(Boolean);
+  }
   return group ? state.airports.filter(item => group.airports.includes(item.icao)) : state.airports;
 }
 
@@ -799,15 +891,17 @@ function render() {
 function renderSidebar() {
   const list = document.getElementById('group-list');
   const allActive = !state.activeGroup;
-  const all = `<button class="group-item ${allActive ? 'active' : ''}" role="tab" aria-controls="airport-grid" aria-selected="${allActive}" data-group="all"><span class="group-item-name">All airports</span><span class="group-item-count">${state.airports.length}</span></button>`;
-  const groups = state.groups.map(group => `<div class="group-item ${state.activeGroup === group.id ? 'active' : ''}" data-group-row="${escapeHtml(group.id)}" style="--group-color:${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}">
+  const all = `<div class="group-item ${allActive ? 'active' : ''}" data-reorder-group="all"><span class="group-drag-handle" title="Drag to reorder tabs" aria-label="Drag All airports to reorder">⠿</span><button class="group-item-name" role="tab" aria-controls="airport-grid" aria-selected="${allActive}" data-group="all" title="Show all airports">All airports</button><span class="group-item-count">${state.airports.filter(item => !item.builtinOnly).length}</span></div>`;
+  const groups = state.groups.map(group => `<div class="group-item ${state.activeGroup === group.id ? 'active' : ''} ${isBuiltinGroup(group.id) ? 'builtin-group' : ''}" data-group-row="${escapeHtml(group.id)}" data-reorder-group="${escapeHtml(group.id)}" style="--group-color:${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}">
+      <span class="group-drag-handle" title="Drag to reorder tabs" aria-label="Drag ${escapeHtml(group.name)} to reorder">⠿</span>
       <button class="group-item-name" role="tab" aria-controls="airport-grid" aria-selected="${state.activeGroup === group.id}" data-group="${escapeHtml(group.id)}" title="Show group">${escapeHtml(group.name)}</button>
       <span class="group-item-count" data-group-count="${escapeHtml(group.id)}">${group.airports.length}</span>
-      <input class="group-color" type="color" value="${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}" data-group-color="${escapeHtml(group.id)}" aria-label="Choose color for ${escapeHtml(group.name)}" title="Choose group color">
+      ${isBuiltinGroup(group.id) ? '' : `<input class="group-color" type="color" value="${/^#[0-9a-f]{6}$/i.test(group.color || '') ? group.color : '#203735'}" data-group-color="${escapeHtml(group.id)}" aria-label="Choose color for ${escapeHtml(group.name)}" title="Choose group color">
       <button class="icon-button group-rename" data-rename-group="${escapeHtml(group.id)}" aria-label="Rename group ${escapeHtml(group.name)}" title="Rename group">✎</button>
-      <button class="icon-button group-delete" data-delete-group="${escapeHtml(group.id)}" aria-label="Delete group ${escapeHtml(group.name)}" title="Delete group">×</button>
-    </div>`).join('');
-  list.innerHTML = state.groups.length ? all + groups : `${all}<div class="group-empty">Create a group to collect airports, for example by route or area.</div>`;
+      <button class="icon-button group-delete" data-delete-group="${escapeHtml(group.id)}" aria-label="Delete group ${escapeHtml(group.name)}" title="Delete group">×</button>`}
+    </div>`);
+  const tabMap = new Map([['all', all], ...state.groups.map((group, index) => [group.id, groups[index]])]);
+  list.innerHTML = getSidebarTabIds().map(id => tabMap.get(id)).filter(Boolean).join('') || all;
   list.querySelectorAll('[data-group]').forEach(button => button.addEventListener('click', () => {
     state.activeGroup = button.dataset.group === 'all' ? null : button.dataset.group;
     saveState();
@@ -824,6 +918,52 @@ function renderSidebar() {
     row.style.setProperty('--group-color', input.value);
     saveState();
   }));
+  list.querySelectorAll('[data-reorder-group]').forEach(row => {
+    const handle = row.querySelector('.group-drag-handle');
+    handle.draggable = window.matchMedia('(pointer: fine)').matches;
+    handle.addEventListener('dragstart', event => {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', row.dataset.reorderGroup);
+      row.classList.add('dragging');
+    });
+    handle.addEventListener('dragend', () => list.querySelectorAll('.group-item').forEach(item => item.classList.remove('dragging', 'drag-over')));
+    let touchTargetId = '';
+    handle.addEventListener('pointerdown', event => {
+      if (event.pointerType === 'mouse' && handle.draggable) return;
+      touchTargetId = '';
+      handle.setPointerCapture(event.pointerId);
+      row.classList.add('dragging');
+    });
+    handle.addEventListener('pointermove', event => {
+      if (!handle.hasPointerCapture(event.pointerId)) return;
+      const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-reorder-group]');
+      touchTargetId = target?.dataset.reorderGroup || '';
+      list.querySelectorAll('[data-reorder-group]').forEach(item => item.classList.toggle('drag-over', item.dataset.reorderGroup === touchTargetId));
+      event.preventDefault();
+    });
+    handle.addEventListener('pointerup', event => {
+      if (!handle.hasPointerCapture(event.pointerId)) return;
+      handle.releasePointerCapture(event.pointerId);
+      row.classList.remove('dragging');
+      list.querySelectorAll('[data-reorder-group]').forEach(item => item.classList.remove('drag-over'));
+      if (touchTargetId) reorderGroups(row.dataset.reorderGroup, touchTargetId);
+      touchTargetId = '';
+    });
+    handle.addEventListener('pointercancel', () => {
+      row.classList.remove('dragging');
+      list.querySelectorAll('[data-reorder-group]').forEach(item => item.classList.remove('drag-over'));
+      touchTargetId = '';
+    });
+    row.addEventListener('dragover', event => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      list.querySelectorAll('[data-reorder-group]').forEach(item => item.classList.toggle('drag-over', item === row));
+    });
+    row.addEventListener('drop', event => {
+      event.preventDefault();
+      reorderGroups(event.dataTransfer.getData('text/plain'), row.dataset.reorderGroup);
+    });
+  });
 }
 
 function renderCards() {
@@ -859,6 +999,9 @@ function renderCards() {
   grid.querySelectorAll('[data-history-toggle]').forEach(button => button.addEventListener('click', () => {
     toggleMetarHistory(button.dataset.historyToggle);
   }));
+  grid.querySelectorAll('.weather-condition').forEach(button => button.addEventListener('click', () => {
+    showStatus(button.dataset.tooltip);
+  }));
   document.getElementById('nearby-taf').classList.toggle('active', state.nearbyMode);
   document.getElementById('nearby-icon').textContent = state.nearbyMode ? '←' : '⌖';
   document.getElementById('nearby-label-full').textContent = state.nearbyMode ? 'Back to Airports' : 'Nearby Possible Alternates';
@@ -875,7 +1018,7 @@ function renderCards() {
     }));
     grid.querySelectorAll('[data-add-nearby]').forEach(button => button.addEventListener('click', () => {
       const airport = state.nearbyResults.find(item => item.icao === button.dataset.addNearby);
-      if (airport && !state.airports.some(item => item.icao === airport.icao)) addAirport(airport.icao);
+      if (airport && !isAirportInUserBriefing(airport.icao)) addAirport(airport.icao);
       button.textContent = 'Added';
       button.disabled = true;
     }));
@@ -957,12 +1100,12 @@ async function findNearbyTafAirports(options = {}) {
       while (next < nearby.length) {
         const airport = nearby[next++];
         try {
-          const taf = await fetchWorkerWeather(airport.icao, 'taf');
+          const taf = await fetchFreshWeather(airport.icao, 'taf');
           if (isCachedReport(taf)) {
             const report = { ...taf, retrievedAt: Date.now() };
             if (!isTafExpired(report) && assessPossibleAlternate(report.raw, assessmentWindow)?.possible) {
               const [metarResult, runwayResult, variationResult] = await Promise.allSettled([
-                fetchWorkerWeather(airport.icao, 'metar'),
+                fetchFreshWeather(airport.icao, 'metar'),
                 fetchOurAirportsRunways(airport.icao),
                 fetchOurAirportsVariation(airport.icao)
               ]);
@@ -1051,7 +1194,7 @@ function renderCard(airport, nearby = false) {
     : '';
   const alternateBadge = nearby || isPossibleAlternate(airport) ? ' <span class="alternate-badge">[Possible alternate]</span>' : '';
   const cardActions = nearby
-    ? `<button class="button nearby-add" type="button" data-add-nearby="${airport.icao}" ${state.airports.some(item => item.icao === airport.icao) ? 'disabled' : ''}>${state.airports.some(item => item.icao === airport.icao) ? 'Added' : '＋ Add to briefing'}</button>`
+    ? `<button class="button nearby-add" type="button" data-add-nearby="${airport.icao}" ${isAirportInUserBriefing(airport.icao) ? 'disabled' : ''}>${isAirportInUserBriefing(airport.icao) ? 'Added' : '＋ Add to briefing'}</button>`
     : `${renderGroupMembership(airport.icao)}<button class="icon-button" data-remove="${airport.icao}" title="Remove ${airport.icao}" aria-label="Remove ${airport.icao}">×</button>`;
   const cardIdentification = nearby
     ? `<div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}${notamActions}</h2><p class="nearby-distance">${airport.distance.toFixed(1)} NM away</p></div>`
@@ -1113,7 +1256,7 @@ function closeNotamPanel() {
 
 function renderGroupMembership(icao) {
   const memberships = state.groups.filter(group => group.airports.includes(icao));
-  const options = state.groups.map(group => `<label class="group-membership-option"><input type="checkbox" data-membership-icao="${icao}" data-membership-group="${escapeHtml(group.id)}" ${group.airports.includes(icao) ? 'checked' : ''}><span>${escapeHtml(group.name)}</span></label>`).join('');
+  const options = state.groups.map(group => `<label class="group-membership-option"><input type="checkbox" data-membership-icao="${icao}" data-membership-group="${escapeHtml(group.id)}" ${group.airports.includes(icao) ? 'checked' : ''} ${isBuiltinGroup(group.id) ? 'disabled' : ''}><span>${escapeHtml(group.name)}</span></label>`).join('');
   return `<details class="group-membership"><summary aria-label="Manage groups for ${icao}">Groups ${memberships.length}</summary><div class="group-membership-options">${options || '<span class="group-empty">Add a group in the sidebar.</span>'}</div></details>`;
 }
 
@@ -1126,7 +1269,7 @@ function renderWeatherToggle(icao, product, label, time, report, reportClass, co
   const key = `${icao}:${product}`;
   const expanded = state.expandedWind.has(key);
   const indicator = conditionColors
-    ? `<span class="weather-condition" style="--ceiling-color:${conditionColors.ceiling};--visibility-color:${conditionColors.visibility}" title="Top half: ceiling. Bottom half: visibility." aria-label="Ceiling ${conditionColors.ceilingLabel}; visibility ${conditionColors.visibilityLabel}"></span>`
+    ? `<button class="weather-condition" type="button" style="--ceiling-color:${conditionColors.ceiling};--visibility-color:${conditionColors.visibility}" data-tooltip="Top half: ceiling (${conditionColors.ceilingLabel}). Bottom half: visibility (${conditionColors.visibilityLabel})." title="Top half: ceiling. Bottom half: visibility." aria-label="Explain weather colors: ceiling ${conditionColors.ceilingLabel}; visibility ${conditionColors.visibilityLabel}"></button>`
     : '';
   return `<div class="weather-summary-wrap"><div class="weather-heading"><span class="weather-label">${indicator}${label}${statusTag}</span>${product === 'metar' ? `<button class="history-toggle" type="button" data-history-toggle="${icao}" aria-expanded="${state.expandedHistory.has(icao)}" aria-controls="metar-history-${icao}">History</button>` : ''}<span class="weather-time">${escapeHtml(time || '—')}</span><button class="weather-wind-hint" type="button" data-wind-toggle="${key}" aria-expanded="${expanded}" aria-controls="wind-panel-${key.replace(':', '-')}" title="Show or hide runway wind for ${label}">${expanded ? 'Hide runway wind ▴' : 'Show runway wind ▾'}</button></div><button class="weather-summary" type="button" data-wind-toggle="${key}" aria-expanded="${expanded}" aria-controls="wind-panel-${key.replace(':', '-')}" title="Show or hide runway wind for ${label}"><span class="weather-text ${reportClass}">${report}</span></button></div>`;
 }
@@ -1204,10 +1347,10 @@ async function refreshAirport(icao, options = {}) {
   if (options.renderStart !== false) renderCards();
   try {
     const [metarResult, tafResult, notamResult, runwayResult] = await Promise.allSettled([
-      fetchWorkerWeather(icao, 'metar'),
-      fetchWorkerWeather(icao, 'taf'),
-      fetchWorkerNotams(icao),
-      Promise.allSettled([fetchOurAirportsRunways(icao), fetchOurAirportsVariation(icao)])
+      fetchFreshWeather(icao, 'metar', state.airports.find(item => item.icao === icao)),
+      fetchFreshWeather(icao, 'taf', state.airports.find(item => item.icao === icao)),
+      options.skipNotams ? Promise.resolve(null) : fetchWorkerNotams(icao),
+      options.skipRunways ? Promise.resolve([null, null]) : Promise.allSettled([fetchOurAirportsRunways(icao), fetchOurAirportsVariation(icao)])
     ]);
     const airport = state.airports.find(item => item.icao === icao);
     if (!airport) return;
@@ -1226,8 +1369,8 @@ async function refreshAirport(icao, options = {}) {
     };
     const metarUpdated = updateReport('metar', metarResult);
     const tafUpdated = updateReport('taf', tafResult);
-    if (notamResult.status === 'fulfilled') airport.notams = { ...notamResult.value, retrievedAt: Date.now() };
-    if (metarUpdated || tafUpdated || notamResult.status === 'fulfilled') saveState();
+    if (notamResult.status === 'fulfilled' && notamResult.value) airport.notams = { ...notamResult.value, retrievedAt: Date.now() };
+    if (metarUpdated || tafUpdated || (notamResult.status === 'fulfilled' && notamResult.value)) saveState();
     const runwayData = runwayResult.status === 'fulfilled' ? runwayResult.value[0] : null;
     const variationData = runwayResult.status === 'fulfilled' ? runwayResult.value[1] : null;
     airport.runways = runwayData?.status === 'fulfilled' ? runwayData.value : [];
@@ -1370,7 +1513,7 @@ function renderAlternateAssessment(airport) {
   if (!assessment) return `<p class="alternate-assessment unavailable">Possible alternate: could not be assessed within the selected time window.</p>`;
   if (assessment.possible) return '';
   const text = `Planning minima not met · ${assessment.reasons.join(', ')}`;
-  return `<p class="alternate-assessment not-possible">${escapeHtml(text)} <small>Assessed against your configured planning minima</small></p>`;
+  return `<p class="alternate-assessment not-possible">${escapeHtml(text)}</p>`;
 }
 
 function getPossibleAlternateWindow() {
@@ -1719,6 +1862,27 @@ async function fetchWorkerWeather(icao, product) {
   return { raw: body, time: product === 'metar' ? timestampFromMetar(body) : timestampFromTaf(body) };
 }
 
+async function fetchFreshWeather(icao, product, airport = state.airports.find(item => item.icao === icao)) {
+  const cached = airport?.[product];
+  const maxAge = product === 'metar' ? METAR_REFRESH_AGE_MS : TAF_REFRESH_AGE_MS;
+  const timestamp = cached?.time || (product === 'metar' ? timestampFromMetar(cached?.raw) : timestampFromTaf(cached?.raw));
+  const reportDate = isCachedReport(cached) ? weatherReportDate(timestamp) : null;
+  if (reportDate && Date.now() - reportDate.getTime() < maxAge) return cached;
+  return fetchWorkerWeather(icao, product);
+}
+
+function weatherReportDate(timestamp, reference = new Date()) {
+  const match = String(timestamp || '').match(/^(\d{2})(\d{2})(\d{2})Z$/);
+  if (!match) return null;
+  const [, dayText, hourText, minuteText] = match;
+  const candidates = [];
+  for (let monthOffset = -1; monthOffset <= 1; monthOffset++) {
+    const candidate = new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth() + monthOffset, Number(dayText), Number(hourText), Number(minuteText)));
+    if (candidate.getUTCDate() === Number(dayText) && candidate.getUTCHours() === Number(hourText) && candidate.getUTCMinutes() === Number(minuteText)) candidates.push(candidate);
+  }
+  return candidates.sort((a, b) => Math.abs(a - reference) - Math.abs(b - reference))[0] || null;
+}
+
 function fetchWorkerNotams(icao) {
   const request = notamRequestQueue.then(async () => {
     const delay = Math.max(0, 1200 - (Date.now() - lastNotamRequestAt));
@@ -1927,17 +2091,41 @@ function resolveTafFmDate(validityStart, validityEnd, day, hour, minute = 0) {
 }
 
 async function refreshAll(options = {}) {
-  const airports = [...state.airports];
+  const activeAirports = state.nearbyMode ? [] : airportsInActiveGroup();
+  const activeCodes = new Set(activeAirports.map(airport => airport.icao));
+  const otherAirports = state.airports.filter(airport => !activeCodes.has(airport.icao));
+  const airports = [...activeAirports, ...otherAirports];
   if (!airports.length) {
-  if (!options.quiet) showStatus('Add an airport before refreshing the weather.');
+    if (!options.quiet) showStatus('Add an airport before refreshing the weather.');
     return;
   }
   if (!options.quiet) showStatus(`Refreshing METAR and TAF for ${airports.length} airport${airports.length === 1 ? '' : 's'}…`);
-  const refreshes = airports.map(airport => refreshAirport(airport.icao, { renderStart: false, renderFinish: false }));
+  if (activeAirports.length) await refreshAirportBatch(activeAirports, { quiet: true, render: false, builtIn: Boolean(state.activeGroup && isBuiltinGroup(state.activeGroup)) });
+  if (otherAirports.length) await refreshAirportBatch(otherAirports, { quiet: true, render: false });
   renderCards();
-  await Promise.all(refreshes);
+  if (!options.quiet) showStatus('Weather update complete across all groups.');
+}
+
+async function refreshAirportBatch(airports, options = {}) {
+  const uniqueAirports = [...new Map(airports.map(airport => [airport.icao, airport])).values()];
+  if (!uniqueAirports.length) return;
+  let next = 0;
+  const workers = Array.from({ length: Math.min(6, uniqueAirports.length) }, async () => {
+    while (next < uniqueAirports.length) {
+      const airport = uniqueAirports[next++];
+      const builtIn = options.builtIn || airport.builtinOnly;
+      await refreshAirport(airport.icao, {
+        renderStart: false,
+        renderFinish: false,
+        skipNotams: builtIn,
+        skipRunways: builtIn
+      });
+    }
+  });
+  const refreshes = Promise.all(workers);
   renderCards();
-  if (!options.quiet) showStatus('Weather update complete.');
+  await refreshes;
+  if (options.render !== false) renderCards();
 }
 
 function updateAirportGroupMembership(input) {
@@ -1946,14 +2134,17 @@ function updateAirportGroupMembership(input) {
   const airport = state.airports.find(item => item.icao === icao);
   if (!group || !airport) return;
   if (!input.checked) {
-    const membershipCount = state.groups.filter(item => item.airports.includes(icao)).length;
+    if (isBuiltinGroup(groupId)) { input.checked = true; return; }
+    const membershipCount = state.groups.filter(item => !isBuiltinGroup(item.id) && item.airports.includes(icao)).length;
     if (membershipCount <= 1) {
       input.checked = true;
       showStatus(`${icao} must remain in at least one group.`, true);
       return;
     }
     group.airports = group.airports.filter(code => code !== icao);
+    if (BUILTIN_AIRPORT_ICAOS.has(icao) && !state.groups.some(item => !isBuiltinGroup(item.id) && item.airports.includes(icao))) airport.builtinOnly = true;
   } else if (!group.airports.includes(icao)) {
+    if (!isBuiltinGroup(groupId)) airport.builtinOnly = false;
     group.airports.push(icao);
   }
   saveState();
@@ -1977,11 +2168,31 @@ function reorderVisibleAirports(sourceIcao, targetIcao) {
   render();
 }
 
+function reorderGroups(sourceGroupId, targetGroupId) {
+  if (!sourceGroupId || sourceGroupId === targetGroupId) return;
+  const order = getSidebarTabIds();
+  const from = order.indexOf(sourceGroupId);
+  const to = order.indexOf(targetGroupId);
+  if (from < 0 || to < 0) return;
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  state.tabOrder = order;
+  saveState();
+  renderSidebar();
+}
+
+function getSidebarTabIds() {
+  const valid = new Set(['all', ...state.groups.map(group => group.id)]);
+  const order = state.tabOrder.filter(id => valid.has(id));
+  for (const id of valid) if (!order.includes(id)) order.push(id);
+  return order;
+}
+
 function createGroupFromSelection() {
   const name = window.prompt('What should the group be called?');
   if (!name || !name.trim()) return;
   const group = { id: createGroupId(), name: name.trim().slice(0, 48), airports: [...state.selected] };
   state.groups.push(group);
+  state.airports.forEach(airport => { if (group.airports.includes(airport.icao)) airport.builtinOnly = false; });
   state.selected.clear();
   state.activeGroup = group.id;
   saveState();
@@ -1991,7 +2202,7 @@ function createGroupFromSelection() {
 
 function beginGroupRename(groupId) {
   const group = state.groups.find(item => item.id === groupId);
-  if (!group) return;
+  if (!group || isBuiltinGroup(group.id)) return;
   const row = document.querySelector(`[data-group-row="${CSS.escape(groupId)}"]`);
   if (!row || row.querySelector('.group-name-input')) return;
   const nameButton = row.querySelector('.group-item-name');
@@ -2043,7 +2254,7 @@ function beginGroupRename(groupId) {
 
 function deleteGroup(groupId) {
   const group = state.groups.find(item => item.id === groupId);
-  if (!group) return;
+  if (!group || isBuiltinGroup(group.id)) return;
   state.groups = state.groups.filter(item => item.id !== groupId);
   ensureAirportGroupMembership();
   if (state.activeGroup === groupId) state.activeGroup = null;

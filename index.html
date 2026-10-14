@@ -11,6 +11,11 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="app-update-prompt" id="app-update-prompt" role="alert" aria-live="assertive" hidden>
+    <span>A new Aviation Briefing version is ready. Install it now?</span>
+    <button class="button button-primary" id="install-update" type="button">Install update</button>
+    <button class="button" id="dismiss-update" type="button">Later</button>
+  </div>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar" aria-label="Airport groups" aria-hidden="true">
       <div class="sidebar-header">
