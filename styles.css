@@ -91,8 +91,7 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .subtitle { margin-bottom: 0; color: #8d9ba4; font-size: 12px; }
 .updated-label { padding-bottom: 3px; color: #71818b; font: 10px var(--mono); text-align: right; }
 .airport-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 16px; align-items: start; }
-.airport-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 7px 25px #050b1020; animation: card-in .25s ease both; }
-@keyframes card-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+.airport-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 7px 25px #050b1020; }
 .card-head { display: flex; align-items: center; gap: 9px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
 .drag-handle { flex: 0 0 auto; width: 20px; padding: 0; border: 0; background: transparent; color: #738692; cursor: grab; font-size: 19px; line-height: 1; letter-spacing: -4px; }
 .drag-handle:hover { color: var(--accent); }
@@ -105,6 +104,16 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .alternate-badge { display: inline-block; margin-left: 6px; padding: 3px 6px; border: 1px solid #6898d7; border-radius: 4px; background: #274f83; color: #f0f6ff; font: 600 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; box-shadow: 0 0 0 1px #0a1522; }
 .notam-badge { display: inline-block; margin-left: 6px; padding: 3px 5px; border: 1px solid #5a4d35; border-radius: 4px; background: rgba(185, 133, 58, .16); color: #edca88; font: 500 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; cursor: pointer; }
 .notam-badge:hover { border-color: #9b7a43; background: rgba(185, 133, 58, .25); }
+.nswc-overlay { position: fixed; z-index: 80; inset: 0; display: flex; background: #050a0e; }
+.nswc-overlay[hidden] { display: none; }
+.nswc-panel { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.nswc-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 16px; border-bottom: 1px solid #31414b; background: #14202a; }
+.nswc-header .eyebrow { margin: 0 0 2px; }
+.nswc-header h2 { margin: 0; font: 600 18px var(--display); }
+.nswc-actions { display: flex; align-items: center; gap: 10px; }
+.nswc-actions #nswc-status { color: #98a9b1; font-size: 10px; }
+.nswc-image-wrap { display: grid; flex: 1; min-height: 0; place-items: center; overflow: auto; padding: 8px; }
+.nswc-image-wrap img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .notam-overlay { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 20px; background: #03090dcc; backdrop-filter: blur(3px); }
 .notam-overlay[hidden] { display: none; }
 .notam-panel { width: min(100%, 620px); max-height: calc(100vh - 40px); overflow-y: auto; padding: 22px; border: 1px solid #3a4c57; border-radius: 10px; background: #14202a; box-shadow: 0 24px 80px #0009; }
@@ -123,12 +132,14 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .icon-button { width: 29px; height: 29px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #95a5ae; cursor: pointer; font-size: 17px; }
 .weather-block { padding: 13px 15px 15px; }
 .weather-block + .weather-block { border-top: 1px solid #263640; }
-.weather-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.weather-summary-wrap { min-width: 0; }
+.weather-heading { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
 .weather-summary { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
-.weather-summary:hover .weather-wind-hint, .weather-summary:focus-visible .weather-wind-hint { color: var(--accent); }
+.weather-summary:hover .weather-text, .weather-summary:focus-visible .weather-text { color: #fff; }
 .weather-summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
-.weather-toggle-right { display: inline-flex; align-items: center; gap: 12px; }
-.weather-wind-hint { color: #71818b; font: 9px var(--mono); }
+.weather-wind-hint { padding: 0; border: 0; background: transparent; color: #71818b; cursor: pointer; font: 9px var(--mono); white-space: nowrap; }
+.weather-wind-hint:hover, .weather-wind-hint:focus-visible, .history-toggle:hover, .history-toggle:focus-visible { color: var(--accent); }
+.history-toggle { padding: 3px 6px; border: 1px solid #40545f; border-radius: 4px; background: #1a2932; color: #bac8ce; cursor: pointer; font: 9px var(--mono); }
 .weather-label { display: inline-flex; align-items: center; gap: 7px; color: #b6c3c9; font: 500 10px var(--mono); letter-spacing: .08em; }
 .taf-expired { color: #ff6969; font: 600 9px var(--mono); letter-spacing: .04em; }
 .weather-condition { display: inline-block; flex: 0 0 18px; width: 18px; height: 18px; border: 1px solid #17232b; border-radius: 50%; background: linear-gradient(to bottom, var(--ceiling-color) 0 50%, var(--visibility-color) 50% 100%); box-shadow: 0 0 0 1px #60717b88; }
@@ -137,6 +148,10 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .weather-text.placeholder { color: #71818b; font-family: var(--sans); font-style: italic; }
 .weather-text.error { color: #dca386; }
 .wind-panel { margin: 11px -15px -15px; padding: 10px 15px 13px; border-top: 1px solid #263640; background: #111a21; }
+.history-panel { margin: 11px -15px -15px; padding: 10px 15px 13px; border-top: 1px solid #263640; background: #111a21; }
+.history-entry { padding: 8px 0; border-bottom: 1px solid #263640; }
+.history-entry:last-child { border-bottom: 0; }
+.history-report { margin: 0; color: #d9e2e5; font: 11px/1.6 var(--mono); overflow-wrap: anywhere; }
 .runway-group-title { margin: 11px 0 5px; color: #b5c3c8; font: 9px var(--mono); letter-spacing: .08em; }
 .runway-result { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-top: 1px solid #22313a; color: #d4dfe2; font: 11px var(--mono); }
 .runway-result.best { color: #a9e4d4; }
@@ -235,5 +250,13 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
   .airport-grid { grid-template-columns: minmax(0, 1fr); gap: 11px; }
   .card-head { padding: 11px; }
   .weather-block { padding: 12px 11px; }
+  .weather-heading { gap: 6px; }
+  .weather-wind-hint { margin-left: auto; font-size: 8px; }
+  .history-panel { margin-right: -11px; margin-left: -11px; padding-right: 11px; padding-left: 11px; }
   .sidebar { width: min(300px, 86vw); }
+  .nswc-header { align-items: flex-start; padding: 9px 10px; }
+  .nswc-actions { gap: 6px; }
+  .nswc-actions #nswc-status { display: none; }
+  .nswc-actions .button { min-height: 30px; padding: 0 8px; font-size: 10px; }
+  .nswc-image-wrap { padding: 3px; }
 }

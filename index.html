@@ -45,6 +45,7 @@
         <div class="topbar-actions">
           <button class="button nearby-button" id="nearby-taf" type="button" title="Find possible alternates within 100 NM"><span id="nearby-icon" aria-hidden="true">⌖</span><span class="button-label-full" id="nearby-label-full">Nearby Possible Alternates</span><span class="button-label-short" id="nearby-label-short">Nearby</span></button>
           <button class="button refresh-all" id="refresh-all"><span aria-hidden="true">↻</span> <span class="button-label-full">Refresh all</span><span class="button-label-short">Refresh</span></button>
+          <button class="button nswc-button" id="open-nswc" type="button" title="Open the latest NSWC chart">NSWC</button>
           <button class="button settings-button" id="open-settings" type="button" aria-label="Open settings" title="Settings">⚙ <span class="button-label-full">Settings</span><span class="button-label-short">Settings</span></button>
         </div>
       </header>
@@ -86,6 +87,15 @@
     </main>
   </div>
   <div class="sidebar-scrim" id="sidebar-scrim"></div>
+  <div class="nswc-overlay" id="nswc-overlay" hidden>
+    <section class="nswc-panel" role="dialog" aria-modal="true" aria-labelledby="nswc-title">
+      <header class="nswc-header">
+        <div><p class="eyebrow">LFV ARO</p><h2 id="nswc-title">NSWC</h2></div>
+        <div class="nswc-actions"><span id="nswc-status" role="status" aria-live="polite">Saved image is loaded when available.</span><button class="button" id="refresh-nswc" type="button">↻ Refresh</button><button class="icon-button" id="close-nswc" type="button" aria-label="Close NSWC">×</button></div>
+      </header>
+      <div class="nswc-image-wrap"><img id="nswc-image" alt="LFV NSWC chart" referrerpolicy="no-referrer"></div>
+    </section>
+  </div>
   <div class="notam-overlay" id="notam-overlay" hidden>
     <section class="notam-panel" role="dialog" aria-modal="true" aria-labelledby="notam-title">
       <header class="settings-header"><div><p class="eyebrow">AIRPORT NOTICES</p><h2 id="notam-title">NOTAM</h2></div><button class="icon-button" id="close-notam" type="button" aria-label="Close NOTAMs">×</button></header>

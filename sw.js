@@ -1,6 +1,7 @@
 importScripts('./version.js');
 
 const CACHE_NAME = `aviation-briefing-shell-v${self.AVIATION_BRIEFING_VERSION}`;
+const NSWC_CACHE_NAME = 'aviation-briefing-nswc-v1';
 const APP_SHELL = [
   './index.html',
   './version.js',
@@ -31,6 +32,25 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);
+  if (request.method === 'GET' && url.origin === 'https://aro.lfv.se' && url.pathname === '/tor/nswc2aro.gif') {
+    event.respondWith((async () => {
+      const cache = await caches.open(NSWC_CACHE_NAME);
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      try {
+        const response = await fetch(request);
+        if (response.ok || response.type === 'opaque') {
+          await cache.put(request, response.clone());
+          const oldEntries = (await cache.keys()).filter(key => key.url !== request.url);
+          await Promise.all(oldEntries.map(key => cache.delete(key)));
+        }
+        return response;
+      } catch {
+        return cached || Response.error();
+      }
+    })());
+    return;
+  }
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
 
   if (request.mode === 'navigate') {

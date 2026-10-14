@@ -34,10 +34,12 @@ export default {
         return plain(`Error fetching NOTAMs: ${error.message}`, 502, cors);
       }
     }
-    if (product !== 'metar' && product !== 'taf') return plain('Unsupported product', 400, cors);
+    if (product !== 'metar' && product !== 'taf' && product !== 'metar-history') return plain('Unsupported product', 400, cors);
 
     const aviationProduct = product === 'taf' ? 'taf' : 'metar';
-    const aviationUrl = `https://aviationweather.gov/api/data/${aviationProduct}?ids=${encodeURIComponent(icao)}&format=raw`;
+    const query = new URLSearchParams({ ids: icao, format: 'raw' });
+    if (product === 'metar-history') query.set('hours', '72');
+    const aviationUrl = `https://aviationweather.gov/api/data/${aviationProduct}?${query}`;
     try {
       const response = await fetch(aviationUrl, {
         headers: { 'User-Agent': 'AviationBriefingApp/1.0 (Personal Aviation Tool)' },

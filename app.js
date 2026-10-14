@@ -1,6 +1,8 @@
 const STORAGE_KEY = 'aviation-briefing-v2';
 const APP_VERSION = window.AVIATION_BRIEFING_VERSION || 'dev';
 const WEATHER_WORKER_URL = 'https://metar-proxy.uppenberg1.workers.dev/';
+const NSWC_IMAGE_URL = 'https://aro.lfv.se/tor/nswc2aro.gif?814183';
+const NSWC_SAVED_URL_KEY = 'aviation-briefing-nswc-image-url';
 const RUNWAY_CACHE_PREFIX = 'aviation-briefing-runways-';
 const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
@@ -22,6 +24,8 @@ const state = {
   sidebarOpen: false,
   busy: new Set(),
   expandedWind: new Set(),
+  expandedHistory: new Set(),
+  historyLoading: new Set(),
   nearbyMode: false,
   nearbyResults: [],
   nearbyLoading: false,
@@ -53,6 +57,16 @@ function init() {
     findNearbyTafAirports({ refresh: true, origin: 'destination' });
   });
   document.getElementById('nearby-use-location').addEventListener('click', () => findNearbyTafAirports({ refresh: true, origin: 'gps' }));
+  document.getElementById('open-nswc').addEventListener('click', openNswc);
+  document.getElementById('close-nswc').addEventListener('click', closeNswc);
+  document.getElementById('refresh-nswc').addEventListener('click', refreshNswc);
+  document.getElementById('nswc-overlay').addEventListener('click', event => {
+    if (event.target.id === 'nswc-overlay') closeNswc();
+  });
+  document.getElementById('nswc-image').addEventListener('load', rememberNswcImageUrl);
+  document.getElementById('nswc-image').addEventListener('error', () => {
+    document.getElementById('nswc-status').textContent = 'Could not load chart. Try Refresh.';
+  });
   document.getElementById('nearby-destination').addEventListener('input', event => {
     const input = event.currentTarget;
     const pos = input.selectionStart;
@@ -85,6 +99,7 @@ function init() {
     if (event.key === 'Escape') {
       closeSettings();
       closeNotamPanel();
+      closeNswc();
     }
   });
   document.getElementById('create-group').addEventListener('click', createGroupFromSelection);
@@ -112,6 +127,74 @@ function init() {
   });
   render();
   if (state.airports.length) refreshAll({ quiet: true });
+}
+
+function getSavedNswcImageUrl() {
+  try {
+    const saved = localStorage.getItem(NSWC_SAVED_URL_KEY);
+    const url = saved ? new URL(saved) : null;
+    return url?.origin === 'https://aro.lfv.se' && url.pathname === '/tor/nswc2aro.gif' ? url.href : NSWC_IMAGE_URL;
+  } catch {
+    return NSWC_IMAGE_URL;
+  }
+}
+
+async function openNswc() {
+  const overlay = document.getElementById('nswc-overlay');
+  const image = document.getElementById('nswc-image');
+  const savedUrl = getSavedNswcImageUrl();
+  document.getElementById('nswc-status').textContent = savedUrl === NSWC_IMAGE_URL ? 'Loading latest chart…' : 'Loading saved chart…';
+  overlay.hidden = false;
+  if (window.isSecureContext && 'serviceWorker' in navigator) {
+    try {
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) {
+        await Promise.race([
+          new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true })),
+          new Promise(resolve => setTimeout(resolve, 2000))
+        ]);
+      }
+    } catch { /* Online display remains available if service worker setup fails. */ }
+  }
+  if (image.src === savedUrl && image.complete && image.naturalWidth > 0) {
+    document.getElementById('nswc-status').textContent = navigator.serviceWorker?.controller
+      ? 'Showing locally saved chart.'
+      : 'Chart loaded.';
+  } else {
+    image.src = savedUrl;
+  }
+}
+
+function closeNswc() {
+  document.getElementById('nswc-overlay').hidden = true;
+}
+
+function rememberNswcImageUrl() {
+  const image = document.getElementById('nswc-image');
+  if (!image.currentSrc) return;
+  try { localStorage.setItem(NSWC_SAVED_URL_KEY, image.currentSrc); } catch { /* Keep the image visible when storage is unavailable. */ }
+  document.getElementById('nswc-status').textContent = navigator.serviceWorker?.controller
+    ? 'Chart saved locally for offline viewing.'
+    : 'Chart loaded. Offline saving requires the installed app.';
+}
+
+function refreshNswc() {
+  const status = document.getElementById('nswc-status');
+  const url = new URL(NSWC_IMAGE_URL);
+  url.searchParams.set('refresh', String(Date.now()));
+  status.textContent = 'Refreshing chart…';
+  const latest = new Image();
+  latest.referrerPolicy = 'no-referrer';
+  latest.onload = () => {
+    const image = document.getElementById('nswc-image');
+    image.src = latest.src;
+    try { localStorage.setItem(NSWC_SAVED_URL_KEY, latest.src); } catch { /* Cache API still keeps the fetched image when available. */ }
+    status.textContent = navigator.serviceWorker?.controller
+      ? `Updated ${new Date().toISOString().slice(11, 16)}Z · saved locally`
+      : `Updated ${new Date().toISOString().slice(11, 16)}Z`;
+  };
+  latest.onerror = () => { status.textContent = 'Refresh failed; showing the previously saved chart if available.'; };
+  latest.src = url.href;
 }
 
 function loadState() {
@@ -463,6 +546,15 @@ function formatTafForFlightWindow(raw, airport) {
   const slices = getTafWindowSlices(raw, info);
   if (!slices.length) return formatWeatherMarkup(raw, 'taf', airport);
   const ranges = slices.filter(slice => slice.highlight).map(slice => ({ start: slice.start, end: slice.end }));
+  if (ranges.length) {
+    const firstSelected = Math.min(...ranges.map(range => range.start));
+    for (const component of ['wind', 'visibility', 'cloud', 'weather']) {
+      const presentInSelectedGroups = ranges.some(range => getTafComponentRanges(raw.slice(range.start, range.end), component).length);
+      if (presentInSelectedGroups) continue;
+      const inheritedComponent = findInheritedTafComponent(raw, slices, firstSelected, component);
+      if (inheritedComponent) ranges.push({ ...inheritedComponent, inheritedComponent: component });
+    }
+  }
   const baseWind = extractWindForWindow(raw, info).find(wind => wind.source === 'BASE');
   if (baseWind) {
     const marker = /(?:^|\s)(?:FM\d{6}|BECMG\s+\d{4}\/\d{4}|TEMPO\s+\d{4}\/\d{4}|PROB\d{2}(?:\s+TEMPO)?\s+\d{4}\/\d{4})/;
@@ -482,11 +574,44 @@ function formatTafForFlightWindow(raw, airport) {
   for (const range of ranges) {
     if (range.start < cursor) continue;
     html += formatWeatherMarkup(raw.slice(cursor, range.start), 'taf', airport);
-    html += `<mark class="taf-flight-window" title="TAF period or wind group applicable during the selected assessment window">${formatWeatherMarkup(raw.slice(range.start, range.end), 'taf', airport)}</mark>`;
+    const title = range.inheritedComponent
+      ? `${range.inheritedComponent[0].toUpperCase()}${range.inheritedComponent.slice(1)} carried forward from the preceding prevailing TAF group`
+      : 'TAF period or wind group applicable during the selected assessment window';
+    html += `<mark class="taf-flight-window" title="${title}">${formatWeatherMarkup(raw.slice(range.start, range.end), 'taf', airport)}</mark>`;
     cursor = range.end;
   }
   html += formatWeatherMarkup(raw.slice(cursor), 'taf', airport);
   return html;
+}
+
+function getTafVisibilityRanges(text) {
+  return [...text.matchAll(/(?<!\/)\b\d{4}\b(?!\/)|\bCAVOK\b/g)]
+    .map(match => ({ start: match.index, end: match.index + match[0].length }));
+}
+
+function getTafComponentRanges(text, component) {
+  const patterns = {
+    wind: /\b(?:\d{3}|VRB)\d{2,3}(?:G\d{2,3})?KT\b/g,
+    visibility: /(?<!\/)\b\d{4}\b(?!\/)|\bCAVOK\b/g,
+    cloud: /\b(?:FEW|SCT|BKN|OVC)\d{3}(?:CB|TCU)?\b|\b(?:SKC|NSC|NCD|VV\d{3})\b|\bCAVOK\b/g,
+    weather: /\b(?:[+-])?(?:(?:MI|PR|BC|DR|BL|SH|TS|FZ)?(?:DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS)|TS|CB|TCU)\b|\bCAVOK\b/g
+  };
+  return [...text.matchAll(patterns[component])]
+    .map(match => ({ start: match.index, end: match.index + match[0].length }));
+}
+
+function findInheritedTafComponent(raw, slices, beforeIndex, component) {
+  const priorPrevailingSlices = slices
+    .filter(slice => slice.end <= beforeIndex && ['BASE', 'FM', 'BECMG'].includes(slice.kind))
+    .sort((a, b) => b.end - a.end);
+  for (const slice of priorPrevailingSlices) {
+    const componentRanges = getTafComponentRanges(raw.slice(slice.start, slice.end), component);
+    if (componentRanges.length) {
+      const last = componentRanges[componentRanges.length - 1];
+      return { start: slice.start + last.start, end: slice.start + last.end };
+    }
+  }
+  return null;
 }
 
 function formatCrosswindWind(windText, direction, speed, gust, airport) {
@@ -627,6 +752,9 @@ function renderCards() {
   }
   grid.querySelectorAll('[data-notam-airport]').forEach(button => button.addEventListener('click', () => {
     openNotamPanel(button.dataset.notamAirport, button.dataset.notamType);
+  }));
+  grid.querySelectorAll('[data-history-toggle]').forEach(button => button.addEventListener('click', () => {
+    toggleMetarHistory(button.dataset.historyToggle);
   }));
   document.getElementById('nearby-taf').classList.toggle('active', state.nearbyMode);
   document.getElementById('nearby-icon').textContent = state.nearbyMode ? '←' : '⌖';
@@ -834,6 +962,7 @@ function renderCard(airport, nearby = false) {
     <section class="weather-block">
       ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw, 'metar', airport) : escapeHtml(metarText), metar.error ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null)}
       ${renderWeatherRunwayPanel(airport, 'metar')}
+      ${renderMetarHistoryPanel(airport)}
     </section>
     <section class="weather-block taf-block">
       ${renderWeatherToggle(airport.icao, 'taf', 'TAF', taf.time, taf.raw ? formatTafForFlightWindow(taf.raw, airport) : escapeHtml(tafText), taf.error ? 'error' : taf.raw ? '' : 'placeholder', taf.raw ? getWeatherConditionColors(taf.raw, 'taf') : null, tafExpired ? '<span class="taf-expired" title="TAF validity period has ended">[EXPIRED]</span>' : '')}
@@ -896,7 +1025,7 @@ function renderWeatherToggle(icao, product, label, time, report, reportClass, co
   const indicator = conditionColors
     ? `<span class="weather-condition" style="--ceiling-color:${conditionColors.ceiling};--visibility-color:${conditionColors.visibility}" title="Top half: ceiling. Bottom half: visibility." aria-label="Ceiling ${conditionColors.ceilingLabel}; visibility ${conditionColors.visibilityLabel}"></span>`
     : '';
-  return `<button class="weather-summary" type="button" data-wind-toggle="${key}" aria-expanded="${expanded}" aria-controls="wind-panel-${key.replace(':', '-')}" title="Show or hide runway wind for ${label}"><span class="weather-heading"><span class="weather-label">${indicator}${label}${statusTag}</span><span class="weather-toggle-right"><span class="weather-time">${escapeHtml(time || '—')}</span><span class="weather-wind-hint">${expanded ? 'Hide runway wind ▴' : 'Show runway wind ▾'}</span></span></span><span class="weather-text ${reportClass}">${report}</span></button>`;
+  return `<div class="weather-summary-wrap"><div class="weather-heading"><span class="weather-label">${indicator}${label}${statusTag}</span>${product === 'metar' ? `<button class="history-toggle" type="button" data-history-toggle="${icao}" aria-expanded="${state.expandedHistory.has(icao)}" aria-controls="metar-history-${icao}">History</button>` : ''}<span class="weather-time">${escapeHtml(time || '—')}</span><button class="weather-wind-hint" type="button" data-wind-toggle="${key}" aria-expanded="${expanded}" aria-controls="wind-panel-${key.replace(':', '-')}" title="Show or hide runway wind for ${label}">${expanded ? 'Hide runway wind ▴' : 'Show runway wind ▾'}</button></div><button class="weather-summary" type="button" data-wind-toggle="${key}" aria-expanded="${expanded}" aria-controls="wind-panel-${key.replace(':', '-')}" title="Show or hide runway wind for ${label}"><span class="weather-text ${reportClass}">${report}</span></button></div>`;
 }
 
 function getWeatherConditionColors(raw, product) {
@@ -906,7 +1035,14 @@ function getWeatherConditionColors(raw, product) {
     const slices = getTafWindowSlices(raw, getPossibleAlternateWindow());
     if (slices.length) {
       const selected = slices.filter(slice => slice.highlight);
-      if (selected.length) relevantText = selected.map(slice => raw.slice(slice.start, slice.end)).join(' ');
+      if (selected.length) {
+        relevantText = selected.map(slice => raw.slice(slice.start, slice.end)).join(' ');
+        if (!getTafVisibilityRanges(relevantText).length) {
+          const firstSelected = Math.min(...selected.map(slice => slice.start));
+          const inheritedVisibility = findInheritedTafComponent(raw, slices, firstSelected, 'visibility');
+          if (inheritedVisibility) relevantText += ` ${raw.slice(inheritedVisibility.start, inheritedVisibility.end)}`;
+        }
+      }
     }
   }
 
@@ -959,10 +1095,10 @@ function getWeatherConditionColors(raw, product) {
   };
 }
 
-async function refreshAirport(icao) {
+async function refreshAirport(icao, options = {}) {
   if (state.busy.has(icao)) return;
   state.busy.add(icao);
-  renderCards();
+  if (options.renderStart !== false) renderCards();
   try {
     const [metarResult, tafResult, notamResult, runwayResult] = await Promise.allSettled([
       fetchWorkerWeather(icao, 'metar'),
@@ -1001,7 +1137,7 @@ async function refreshAirport(icao) {
     console.error(`Could not fetch weather for ${icao}:`, error);
   } finally {
     state.busy.delete(icao);
-    renderCards();
+    if (options.renderFinish !== false) renderCards();
   }
 }
 
@@ -1062,6 +1198,66 @@ function renderWindRunways(runways, winds) {
     const heading = row.magneticHeading === null ? '' : ` · ${row.magneticHeading.toFixed(0)}°M`;
     return `<div class="runway-result ${isBest ? 'best' : ''}"><span>RWY ${escapeHtml(row.ident)}${heading}${isBest ? ' <b class="best-runway-badge">BEST</b>' : ''}<small class="runway-wind-used">Wind calculated using ${escapeHtml(row.windLabel)}${row.source && row.source !== 'METAR' ? ` · ${escapeHtml(row.source)}` : ''}</small></span><span>${escapeHtml(row.hwLabel)} · ${escapeHtml(row.xwLabel)}</span></div>`;
   }).join('');
+}
+
+function renderMetarHistoryPanel(airport) {
+  const icao = airport.icao;
+  if (!state.expandedHistory.has(icao)) return '';
+  const panelId = `metar-history-${icao}`;
+  if (state.historyLoading.has(icao)) return `<div class="history-panel" id="${panelId}"><p class="runway-empty">Loading recent METAR history…</p></div>`;
+  if (airport.metarHistoryError) return `<div class="history-panel" id="${panelId}"><p class="runway-empty">${escapeHtml(airport.metarHistoryError)}</p></div>`;
+  if (!Array.isArray(airport.metarHistory) || !airport.metarHistory.length) return `<div class="history-panel" id="${panelId}"><p class="runway-empty">No recent METAR history available.</p></div>`;
+  const observations = airport.metarHistory.map(observation => {
+    return `<article class="history-entry"><p class="history-report">${formatWeatherMarkup(observation.raw, 'metar', airport)}</p></article>`;
+  }).join('');
+  return `<div class="history-panel" id="${panelId}">${observations}</div>`;
+}
+
+async function toggleMetarHistory(icao) {
+  if (state.expandedHistory.has(icao)) {
+    state.expandedHistory.delete(icao);
+    renderCards();
+    return;
+  }
+  state.expandedHistory.add(icao);
+  const airport = state.airports.find(item => item.icao === icao) || state.nearbyResults.find(item => item.icao === icao);
+  if (!airport) return;
+  if (!Array.isArray(airport.metarHistory) && !state.historyLoading.has(icao)) {
+    state.historyLoading.add(icao);
+    renderCards();
+    try {
+      airport.metarHistory = await fetchMetarHistory(icao);
+      airport.metarHistoryError = '';
+    } catch (error) {
+      airport.metarHistoryError = `Could not load METAR history: ${error.message}`;
+    } finally {
+      state.historyLoading.delete(icao);
+    }
+  }
+  renderCards();
+}
+
+async function fetchMetarHistory(icao) {
+  const url = new URL(WEATHER_WORKER_URL);
+  url.searchParams.set('icao', icao);
+  url.searchParams.set('product', 'metar-history');
+  const response = await fetch(url.toString());
+  const body = (await response.text()).trim();
+  if (!response.ok) throw new Error(body || `Worker returned HTTP ${response.status}`);
+  const reports = body.split(/(?=\b(?:METAR|SPECI)\s+[A-Z0-9]{4}\s+\d{6}Z)/g)
+    .map(raw => raw.trim())
+    .filter(raw => /^(?:METAR|SPECI)\s+[A-Z0-9]{4}\s+\d{6}Z/.test(raw));
+  return reports.map(raw => {
+    const match = raw.match(/\b(\d{2})(\d{2})(\d{2})Z\b/);
+    const epoch = match ? resolveMetarHistoryTimestamp(match.slice(1).map(Number)) : 0;
+    return { raw, time: timestampFromMetar(raw), epoch };
+  }).sort((a, b) => b.epoch - a.epoch).slice(0, 10);
+}
+
+function resolveMetarHistoryTimestamp([day, hour, minute]) {
+  const now = new Date();
+  const candidates = [-1, 0, 1].map(offset => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, day, hour, minute)));
+  return candidates.sort((a, b) => Math.abs(a.getTime() - now.getTime()) - Math.abs(b.getTime() - now.getTime()))[0].getTime();
 }
 
 function renderAlternateAssessment(airport) {
@@ -1162,11 +1358,11 @@ function getTafWindowSlices(raw, window) {
   const slices = [];
   let cursor = 0;
   for (const group of groups) {
-    if (group.start > cursor) slices.push({ start: cursor, end: group.start, highlight: false });
-    slices.push({ start: group.start, end: group.end, highlight: intervalsOverlap(group.interval, window) });
+    if (group.start > cursor) slices.push({ start: cursor, end: group.start, highlight: false, kind: null });
+    slices.push({ start: group.start, end: group.end, highlight: intervalsOverlap(group.interval, window), kind: group.kind });
     cursor = group.end;
   }
-  if (cursor < raw.length) slices.push({ start: cursor, end: raw.length, highlight: false });
+  if (cursor < raw.length) slices.push({ start: cursor, end: raw.length, highlight: false, kind: null });
   return slices;
 }
 
@@ -1634,7 +1830,10 @@ async function refreshAll(options = {}) {
     return;
   }
   if (!options.quiet) showStatus(`Refreshing METAR and TAF for ${airports.length} airport${airports.length === 1 ? '' : 's'}…`);
-  await Promise.all(airports.map(airport => refreshAirport(airport.icao)));
+  const refreshes = airports.map(airport => refreshAirport(airport.icao, { renderStart: false, renderFinish: false }));
+  renderCards();
+  await Promise.all(refreshes);
+  renderCards();
   if (!options.quiet) showStatus('Weather update complete.');
 }
 
