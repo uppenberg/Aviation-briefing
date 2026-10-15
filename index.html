@@ -101,6 +101,15 @@
       <div class="nswc-image-wrap"><img id="nswc-image" alt="LFV NSWC chart" referrerpolicy="no-referrer"></div>
     </section>
   </div>
+  <div class="nswc-overlay" id="awos-overlay" hidden>
+    <section class="nswc-panel" role="dialog" aria-modal="true" aria-labelledby="awos-title">
+      <header class="nswc-header">
+        <div><p class="eyebrow">SAVED STATION OBSERVATION</p><h2 id="awos-title">AWOS</h2></div>
+        <div class="nswc-actions"><span id="awos-status" role="status" aria-live="polite">Saved AWOS report is loaded when available.</span><button class="button" id="refresh-awos" type="button">↻ Refresh</button><button class="icon-button" id="close-awos" type="button" aria-label="Close AWOS">×</button></div>
+      </header>
+      <div class="awos-report-wrap"><pre id="awos-report" class="awos-report"></pre></div>
+    </section>
+  </div>
   <div class="notam-overlay" id="notam-overlay" hidden>
     <section class="notam-panel" role="dialog" aria-modal="true" aria-labelledby="notam-title">
       <header class="settings-header"><div><p class="eyebrow">AIRPORT NOTICES</p><h2 id="notam-title">NOTAM</h2></div><button class="icon-button" id="close-notam" type="button" aria-label="Close NOTAMs">×</button></header>

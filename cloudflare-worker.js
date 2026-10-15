@@ -1,4 +1,4 @@
-// Deploy this as the existing metar-proxy Worker to add FAA NOTAM support.
+// Deploy this as the existing metar-proxy Worker to support FAA NOTAM and AWOS data.
 // Keep the FAA credentials in Worker secrets:
 //   FAA_NMS_CLIENT_ID
 //   FAA_NMS_CLIENT_SECRET
@@ -6,6 +6,7 @@
 
 const FAA_AUTH_URL = 'https://api-nms.aim.faa.gov/v1/auth/token';
 const FAA_NMS_URL = 'https://api-nms.aim.faa.gov/nmsapi';
+const AWOS_ICAOS = new Set('EKAR EKSI ESSB ESGG ESNL ESKM ESUP ESNG ESMX ESOK ESND ESGP ESSL ESMS ESOW ESOH ESNX ESNK ESNV ESMK ESOE ESGT ESKN ESGJ ESUT ESNS EDAZ ESSA'.split(' '));
 let cachedFaaToken = '';
 let cachedFaaTokenExpiresAt = 0;
 
@@ -34,6 +35,17 @@ export default {
         return plain(`Error fetching NOTAMs: ${error.message}`, 502, cors);
       }
     }
+    if (product === 'awos') {
+      if (!AWOS_ICAOS.has(icao)) return plain('AWOS is not available for this airport', 404, cors);
+      try {
+        const data = await getAwosReport(icao);
+        return new Response(JSON.stringify(data), {
+          headers: { ...cors, 'Content-Type': 'application/json;charset=UTF-8', 'Cache-Control': 'no-store' },
+        });
+      } catch (error) {
+        return plain(`Error fetching AWOS for ${icao}: ${error.message}`, 502, cors);
+      }
+    }
     if (product !== 'metar' && product !== 'taf' && product !== 'metar-history') return plain('Unsupported product', 400, cors);
 
     const aviationProduct = product === 'taf' ? 'taf' : 'metar';
@@ -53,6 +65,28 @@ export default {
     }
   },
 };
+
+async function getAwosReport(icao) {
+  const pageResponse = await fetch(`https://wx.awos.se/?siteId=${encodeURIComponent(icao)}`, {
+    headers: { 'User-Agent': 'AviationBriefingApp/1.0 (Personal Aviation Tool)' },
+  });
+  if (!pageResponse.ok) throw new Error(`AWOS site returned HTTP ${pageResponse.status}`);
+  const page = await pageResponse.text();
+  const viewMatch = page.match(/\.load\(['"]get\.aspx\?viewId=([^&'"]+)/i);
+  if (!viewMatch) throw new Error('AWOS page did not include an overview');
+
+  const dataUrl = new URL('https://wx.awos.se/get.aspx');
+  dataUrl.searchParams.set('viewId', viewMatch[1]);
+  dataUrl.searchParams.set('refresh', String(Date.now()));
+  const cookie = pageResponse.headers.get('set-cookie')?.split(';', 1)[0];
+  const headers = { 'User-Agent': 'AviationBriefingApp/1.0 (Personal Aviation Tool)' };
+  if (cookie) headers.Cookie = cookie;
+  const dataResponse = await fetch(dataUrl, { headers });
+  if (!dataResponse.ok) throw new Error(`AWOS data returned HTTP ${dataResponse.status}`);
+  const raw = (await dataResponse.text()).trim();
+  if (!raw) throw new Error('AWOS site returned an empty report');
+  return { raw, retrievedAt: Date.now() };
+}
 
 function plain(text, status, cors) {
   return new Response(text, { status, headers: { ...cors, 'Content-Type': 'text/plain;charset=UTF-8' } });

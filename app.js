@@ -9,6 +9,7 @@ const METAR_REFRESH_AGE_MS = 20 * 60 * 1000;
 const TAF_REFRESH_AGE_MS = 3 * 60 * 60 * 1000;
 const NOTAM_REFRESH_AGE_MS = 5 * 60 * 1000;
 const METAR_EXPIRED_AGE_MS = 35 * 60 * 1000;
+const AWOS_SUPPORTED_ICAOS = new Set('EKAR EKSI ESSB ESGG ESNL ESKM ESUP ESNG ESMX ESOK ESND ESGP ESSL ESMS ESOW ESOH ESNX ESNK ESNV ESMK ESOE ESGT ESKN ESGJ ESUT ESNS EDAZ ESSA'.split(' '));
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
 const OURAIRPORTS_NAVAIDS_URL = 'https://davidmegginson.github.io/ourairports-data/navaids.csv';
 const OURAIRPORTS_AIRPORTS_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
@@ -31,6 +32,7 @@ let navaidCsvPromise = null;
 let metarExpiryTimer = null;
 let notamRequestQueue = Promise.resolve();
 let lastNotamRequestAt = 0;
+const awosRequests = new Map();
 const state = {
   airports: [],
   groups: [],
@@ -51,7 +53,8 @@ const state = {
   nearbyRadiusNm: DEFAULT_NEARBY_RADIUS_NM,
   nearbyDestination: '',
   nearbyOrigin: 'Choose origin',
-  nearbyHasSearched: false
+  nearbyHasSearched: false,
+  activeAwosIcao: null
 };
 
 document.addEventListener('DOMContentLoaded', init);
@@ -77,6 +80,13 @@ function init() {
   document.getElementById('open-nswc').addEventListener('click', openNswc);
   document.getElementById('close-nswc').addEventListener('click', closeNswc);
   document.getElementById('refresh-nswc').addEventListener('click', refreshNswc);
+  document.getElementById('close-awos').addEventListener('click', closeAwosPanel);
+  document.getElementById('refresh-awos').addEventListener('click', () => {
+    if (state.activeAwosIcao) refreshAwosAirport(state.activeAwosIcao);
+  });
+  document.getElementById('awos-overlay').addEventListener('click', event => {
+    if (event.target.id === 'awos-overlay') closeAwosPanel();
+  });
   document.getElementById('nswc-overlay').addEventListener('click', event => {
     if (event.target.id === 'nswc-overlay') closeNswc();
   });
@@ -125,6 +135,7 @@ function init() {
       closeSettings();
       closeNotamPanel();
       closeNswc();
+      closeAwosPanel();
     }
   });
   document.getElementById('create-group').addEventListener('click', createGroupFromSelection);
@@ -234,6 +245,102 @@ function refreshNswc() {
   });
 }
 
+function openAwosPanel(icao) {
+  if (!AWOS_SUPPORTED_ICAOS.has(icao) || !isUserAirport(icao)) return;
+  state.activeAwosIcao = icao;
+  document.getElementById('awos-title').textContent = `AWOS · ${icao}`;
+  document.getElementById('awos-overlay').hidden = false;
+  renderAwosReport(icao);
+  const airport = state.airports.find(item => item.icao === icao);
+  if (!isCachedAwos(airport?.awos)) refreshAwosAirport(icao);
+}
+
+function closeAwosPanel() {
+  document.getElementById('awos-overlay').hidden = true;
+  state.activeAwosIcao = null;
+}
+
+function renderAwosReport(icao, status = '') {
+  const airport = state.airports.find(item => item.icao === icao);
+  const report = airport?.awos;
+  const output = document.getElementById('awos-report');
+  const message = document.getElementById('awos-status');
+  output.textContent = isCachedAwos(report) ? report.raw : 'No saved AWOS report is available.';
+  if (status) {
+    message.textContent = status;
+  } else if (isCachedAwos(report)) {
+    message.textContent = `Saved ${new Date(report.retrievedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC · available offline`;
+  } else {
+    message.textContent = 'No saved AWOS report yet.';
+  }
+}
+
+function formatAwosReport(markup) {
+  const document = new DOMParser().parseFromString(markup, 'text/html');
+  const entries = [...document.querySelectorAll('.spanText')];
+  const inline = entries.filter(entry => entry.tagName !== 'PRE')
+    .map(entry => entry.textContent.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const reportBlocks = entries.filter(entry => entry.tagName === 'PRE')
+    .map(entry => entry.textContent.replace(/\r\n?/g, '\n').split('\n').map(line => line.trimEnd()).join('\n').replace(/\n(?:[ \t]*\n)+/g, '\n').trim())
+    .filter(Boolean);
+  const timestamp = inline.find(text => /^\d{4}-\d{2}-\d{2}T/.test(text));
+  const runway = inline.find(text => /^RUNWAY IN USE:/i.test(text));
+  const metar = inline.find(text => /^METAR\b/.test(text));
+  const formatted = [timestamp, runway, ...reportBlocks, metar].filter(Boolean).join('\n\n');
+  return formatted || document.body.textContent.replace(/\s+/g, ' ').trim();
+}
+
+async function refreshAwosAirport(icao) {
+  const airport = state.airports.find(item => item.icao === icao);
+  if (!AWOS_SUPPORTED_ICAOS.has(icao) || !isUserAirport(icao) || !airport) return false;
+  if (awosRequests.has(icao)) return awosRequests.get(icao);
+  const request = (async () => {
+    if (state.activeAwosIcao === icao) renderAwosReport(icao, 'Refreshing AWOS report…');
+    try {
+      const url = new URL(WEATHER_WORKER_URL);
+      url.searchParams.set('icao', icao);
+      url.searchParams.set('product', 'awos');
+      const response = await fetch(url.toString());
+      const body = await response.text();
+      if (!response.ok) throw new Error(`Cloudflare Worker returned HTTP ${response.status}${body ? `: ${body.slice(0, 180)}` : ''}`);
+      const data = JSON.parse(body);
+      if (typeof data.raw !== 'string' || !data.raw.trim() || !Number.isFinite(data.retrievedAt)) {
+        throw new Error(`Worker returned an invalid AWOS report for ${icao}`);
+      }
+      const raw = formatAwosReport(data.raw);
+      if (!raw) throw new Error(`AWOS report for ${icao} contained no readable data`);
+      airport.awos = { raw, retrievedAt: data.retrievedAt };
+      saveState();
+      if (state.activeAwosIcao === icao) renderAwosReport(icao, 'AWOS report refreshed and saved offline.');
+      return true;
+    } catch (error) {
+      console.warn(`Could not refresh AWOS for ${icao}:`, error);
+      if (state.activeAwosIcao === icao) renderAwosReport(icao, isCachedAwos(airport.awos)
+        ? 'Refresh failed; showing the saved report.'
+        : `Could not load AWOS: ${error.message}`);
+      return false;
+    } finally {
+      awosRequests.delete(icao);
+    }
+  })();
+  awosRequests.set(icao, request);
+  return request;
+}
+
+async function refreshOwnedAwos() {
+  const airports = state.airports.filter(airport => AWOS_SUPPORTED_ICAOS.has(airport.icao) && isUserAirport(airport.icao));
+  let next = 0;
+  let failures = 0;
+  const workers = Array.from({ length: Math.min(4, airports.length) }, async () => {
+    while (next < airports.length) {
+      if (!await refreshAwosAirport(airports[next++].icao)) failures++;
+    }
+  });
+  await Promise.all(workers);
+  return failures;
+}
+
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
@@ -244,6 +351,7 @@ function loadState() {
         ...(item.builtinOnly === true || item.swedenBuiltinOnly === true ? { builtinOnly: true } : {}),
         ...(isCachedReport(item.metar) ? { metar: restoreCachedReport(item.metar) } : {}),
         ...(isCachedReport(item.taf) ? { taf: restoreCachedReport(item.taf) } : {}),
+        ...(isCachedAwos(item.awos) ? { awos: item.awos } : {}),
         ...(isCachedNotams(item.notams) ? { notams: item.notams } : {})
       })) : [];
     state.groups = Array.isArray(saved.groups) ? saved.groups.filter(group => group && typeof group.id === 'string' && typeof group.name === 'string') : [];
@@ -269,11 +377,12 @@ function loadState() {
 function saveState() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    airports: state.airports.map(({ icao, builtinOnly, metar, taf, notams }) => ({
+    airports: state.airports.map(({ icao, builtinOnly, metar, taf, awos, notams }) => ({
       icao,
       ...(builtinOnly ? { builtinOnly: true } : {}),
       ...(isCachedReport(metar) ? { metar: serializeCachedReport(metar) } : {}),
       ...(isCachedReport(taf) ? { taf: serializeCachedReport(taf) } : {}),
+      ...(isCachedAwos(awos) ? { awos } : {}),
       ...(isCachedNotams(notams) ? { notams } : {})
     })),
     groups: state.groups,
@@ -295,6 +404,14 @@ function saveState() {
 
 function isCachedReport(report) {
   return report && typeof report.raw === 'string' && report.raw.trim().length > 0;
+}
+
+function isCachedAwos(report) {
+  return report && typeof report.raw === 'string' && report.raw.trim().length > 0 && Number.isFinite(report.retrievedAt);
+}
+
+function isUserAirport(icao) {
+  return state.groups.some(group => !isBuiltinGroup(group.id) && group.airports.includes(icao));
 }
 
 function isCachedNotams(notams) {
@@ -1027,6 +1144,9 @@ function renderCards() {
   grid.querySelectorAll('[data-notam-airport]').forEach(button => button.addEventListener('click', () => {
     openNotamPanel(button.dataset.notamAirport, button.dataset.notamType);
   }));
+  grid.querySelectorAll('[data-awos-airport]').forEach(button => button.addEventListener('click', () => {
+    openAwosPanel(button.dataset.awosAirport);
+  }));
   grid.querySelectorAll('[data-history-toggle]').forEach(button => button.addEventListener('click', () => {
     toggleMetarHistory(button.dataset.historyToggle);
   }));
@@ -1227,6 +1347,9 @@ function renderCard(airport, nearby = false) {
   const metarText = metar.raw || (loading ? 'Loading current observation…' : metar.error || 'No METAR available.');
   const tafText = taf.raw || (loading ? 'Loading forecast…' : taf.error || 'No TAF available.');
   const notams = isCachedNotams(airport.notams) ? airport.notams : null;
+  const awosAction = !nearby && !isBuiltinGroup(state.activeGroup) && AWOS_SUPPORTED_ICAOS.has(airport.icao) && isUserAirport(airport.icao)
+    ? `<button class="notam-badge awos-badge" type="button" data-awos-airport="${airport.icao}" title="Open saved AWOS report">AWOS</button>`
+    : '';
   const notamActions = notams?.allNotams.length
     ? `${renderNotamButton(airport.icao, 'notam', `NOTAM ${notams.allNotams.length}`)}${notams.filteredNotams.length ? renderNotamButton(airport.icao, 'hours', `OP HRS ${notams.filteredNotams.length}`) : ''}`
     : '';
@@ -1236,7 +1359,7 @@ function renderCard(airport, nearby = false) {
     : `${renderGroupMembership(airport.icao)}<button class="icon-button" data-remove="${airport.icao}" title="Remove ${airport.icao}" aria-label="Remove ${airport.icao}">×</button>`;
   const cardIdentification = nearby
     ? `<div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}${notamActions}</h2><p class="nearby-distance">${airport.distance.toFixed(1)} NM away</p></div>`
-    : `<input class="card-select" type="checkbox" data-select="${airport.icao}" aria-label="Select ${airport.icao}" ${state.selected.has(airport.icao) ? 'checked' : ''}><div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}${notamActions}</h2></div>`;
+    : `<input class="card-select" type="checkbox" data-select="${airport.icao}" aria-label="Select ${airport.icao}" ${state.selected.has(airport.icao) ? 'checked' : ''}><div class="airport-ident"><h2 class="airport-code">${airport.icao}${alternateBadge}${notamActions}${awosAction}</h2></div>`;
   return `<article class="airport-card" data-airport="${airport.icao}">
     <header class="card-head">
       ${nearby ? '' : `<button class="drag-handle" type="button" draggable="true" aria-label="Drag to move ${airport.icao}" title="Drag to reorder">⠿</button>`}
@@ -2163,6 +2286,7 @@ function resolveTafFmDate(validityStart, validityEnd, day, hour, minute = 0) {
 
 async function refreshAll(options = {}) {
   const nswcRefresh = refreshNswc();
+  const awosRefresh = refreshOwnedAwos();
   const activeAirports = state.nearbyMode ? [] : airportsInActiveGroup();
   const activeCodes = new Set(activeAirports.map(airport => airport.icao));
   const permanentCodes = new Set(BUILTIN_GROUPS.flatMap(group => group.airports));
@@ -2172,9 +2296,15 @@ async function refreshAll(options = {}) {
   const total = new Set([...activeAirports, ...permanentAirports, ...otherAirports].map(airport => airport.icao)).size;
   if (!total) {
     const nswcUpdated = await nswcRefresh;
-    if (!options.quiet) showStatus(nswcUpdated
-      ? 'NSWC chart updated. Add an airport to refresh the weather.'
-      : 'NSWC chart refresh failed. Add an airport to refresh the weather.', nswcUpdated === false);
+    const awosFailures = await awosRefresh;
+    if (!options.quiet) {
+      const failures = [];
+      if (nswcUpdated === false) failures.push('NSWC chart refresh failed');
+      if (awosFailures) failures.push(`AWOS refresh failed for ${awosFailures} site${awosFailures === 1 ? '' : 's'}`);
+      showStatus(failures.length
+        ? `${failures.join('; ')}. Add an airport to refresh the weather.`
+        : 'NSWC chart updated. Add an airport to refresh the weather.', failures.length > 0);
+    }
     return;
   }
   if (!options.quiet) showStatus(`Refreshing the active tab first (${activeAirports.length} airport${activeAirports.length === 1 ? '' : 's'}); country tabs follow shortly…`);
@@ -2194,6 +2324,8 @@ async function refreshAll(options = {}) {
     notamFailures += await refreshAirportBatch(otherAirports, { quiet: true, render: false });
   }
 
+  const awosFailures = await awosRefresh;
+
   if (permanentAirports.length) {
     if (!options.quiet) showStatus('Your airport tabs refreshed. Updating All Sweden, All Finland and All Norway…');
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -2205,6 +2337,7 @@ async function refreshAll(options = {}) {
   if (!options.quiet) {
     const failures = [];
     if (notamFailures) failures.push(`NOTAM refresh failed for ${notamFailures} airport${notamFailures === 1 ? '' : 's'}; saved data was kept`);
+    if (awosFailures) failures.push(`AWOS refresh failed for ${awosFailures} site${awosFailures === 1 ? '' : 's'}`);
     if (nswcUpdated === false) failures.push('NSWC chart refresh failed');
     showStatus(failures.length
       ? `Weather updated across all groups, but ${failures.join(' and ')}.`

@@ -119,6 +119,10 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .nswc-actions #nswc-status { color: #98a9b1; font-size: 10px; }
 .nswc-image-wrap { display: grid; flex: 1; min-height: 0; place-items: center; overflow: auto; padding: 8px; }
 .nswc-image-wrap img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.awos-report-wrap { flex: 1; min-height: 0; overflow: auto; padding: 18px; background: #101820; }
+.awos-report { width: max-content; min-width: 100%; margin: 0; color: #e4ebed; font: 14px/1.4 var(--mono); white-space: pre; }
+.awos-badge { border-color: #3f796c; background: rgba(80, 163, 140, .14); color: #9de0cb; }
+.awos-badge:hover { border-color: #67cbb1; background: rgba(80, 163, 140, .25); }
 .notam-overlay { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 20px; background: #03090dcc; backdrop-filter: blur(3px); }
 .notam-overlay[hidden] { display: none; }
 .notam-panel { width: min(100%, 620px); max-height: calc(100vh - 40px); overflow-y: auto; padding: 22px; border: 1px solid #3a4c57; border-radius: 10px; background: #14202a; box-shadow: 0 24px 80px #0009; }
