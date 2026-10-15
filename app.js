@@ -7,6 +7,7 @@ const RUNWAY_CACHE_PREFIX = 'aviation-briefing-runways-';
 const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const METAR_REFRESH_AGE_MS = 20 * 60 * 1000;
 const TAF_REFRESH_AGE_MS = 3 * 60 * 60 * 1000;
+const NOTAM_REFRESH_AGE_MS = 5 * 60 * 1000;
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
 const OURAIRPORTS_NAVAIDS_URL = 'https://davidmegginson.github.io/ourairports-data/navaids.csv';
 const OURAIRPORTS_AIRPORTS_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
@@ -129,6 +130,11 @@ function init() {
   document.getElementById('close-sidebar').addEventListener('click', () => setSidebar(false));
   document.getElementById('sidebar-scrim').addEventListener('click', () => setSidebar(false));
   document.getElementById('add-suggested').addEventListener('click', () => addAirport('ESSA'));
+  ['dep-time', 'arr-time'].forEach(id => {
+    const input = document.getElementById(id);
+    input.addEventListener('focus', event => event.currentTarget.select());
+    input.addEventListener('click', event => event.currentTarget.select());
+  });
   document.getElementById('dep-time').addEventListener('change', event => {
     commitFlightTime(event.currentTarget, 'departureTime');
   });
@@ -1125,16 +1131,20 @@ async function findNearbyTafAirports(options = {}) {
                 fetchFreshWeather(airport.icao, 'metar'),
                 fetchOurAirportsRunways(airport.icao),
                 fetchOurAirportsVariation(airport.icao),
-                isCachedNotams(savedAirport?.notams) ? Promise.resolve(savedAirport.notams) : fetchWorkerNotams(airport.icao)
+                fetchFreshNotams(airport.icao, savedAirport)
               ]);
               const metar = metarResult.status === 'fulfilled' && isCachedReport(metarResult.value)
                 ? { ...metarResult.value, retrievedAt: Date.now() }
                 : { error: 'No METAR available.' };
+              if (savedAirport && notamResult.status === 'fulfilled') {
+                savedAirport.notams = notamResult.value;
+                saveState();
+              }
               state.nearbyResults.push({
                 ...airport,
                 taf: report,
                 metar,
-                notams: notamResult.status === 'fulfilled' ? { ...notamResult.value, retrievedAt: Date.now() } : savedAirport?.notams,
+                notams: notamResult.status === 'fulfilled' ? notamResult.value : savedAirport?.notams,
                 runways: runwayResult.status === 'fulfilled' ? runwayResult.value : [],
                 magneticVariation: variationResult.status === 'fulfilled' ? variationResult.value : null
               });
@@ -1360,18 +1370,18 @@ function getWeatherConditionColors(raw, product) {
 }
 
 async function refreshAirport(icao, options = {}) {
-  if (state.busy.has(icao)) return;
+  if (state.busy.has(icao)) return { notamFailed: false };
   state.busy.add(icao);
   if (options.renderStart !== false) renderCards();
   try {
     const [metarResult, tafResult, notamResult, runwayResult] = await Promise.allSettled([
       fetchFreshWeather(icao, 'metar', state.airports.find(item => item.icao === icao)),
       fetchFreshWeather(icao, 'taf', state.airports.find(item => item.icao === icao)),
-      options.skipNotams ? Promise.resolve(null) : fetchWorkerNotams(icao),
+      options.skipNotams ? Promise.resolve(null) : fetchFreshNotams(icao, state.airports.find(item => item.icao === icao)),
       options.skipRunways ? Promise.resolve([null, null]) : Promise.allSettled([fetchOurAirportsRunways(icao), fetchOurAirportsVariation(icao)])
     ]);
     const airport = state.airports.find(item => item.icao === icao);
-    if (!airport) return;
+    if (!airport) return { notamFailed: false };
     const updateReport = (product, result) => {
       const current = airport[product];
       if (result.status === 'fulfilled' && isCachedReport(result.value)) {
@@ -1387,7 +1397,7 @@ async function refreshAirport(icao, options = {}) {
     };
     const metarUpdated = updateReport('metar', metarResult);
     const tafUpdated = updateReport('taf', tafResult);
-    if (notamResult.status === 'fulfilled' && notamResult.value) airport.notams = { ...notamResult.value, retrievedAt: Date.now() };
+    if (notamResult.status === 'fulfilled' && notamResult.value) airport.notams = notamResult.value;
     if (metarUpdated || tafUpdated || (notamResult.status === 'fulfilled' && notamResult.value)) saveState();
     const runwayData = runwayResult.status === 'fulfilled' ? runwayResult.value[0] : null;
     const variationData = runwayResult.status === 'fulfilled' ? runwayResult.value[1] : null;
@@ -1395,10 +1405,14 @@ async function refreshAirport(icao, options = {}) {
     airport.magneticVariation = variationData?.status === 'fulfilled' ? variationData.value : null;
     airport.runwayError = runwayData?.status === 'rejected' ? 'Could not load runway headings from OurAirports.' : '';
     const failed = [metarResult, tafResult].some(result => result.status === 'rejected');
+    const notamFailed = notamResult.status === 'rejected';
     if (failed) showStatus(`Could not fetch weather data for ${icao}.`, true);
+    if (notamFailed && !options.quiet) showStatus(`Could not refresh NOTAMs for ${icao}; saved NOTAMs are unchanged.`, true);
     document.getElementById('updated-label').textContent = `Last updated ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`;
+    return { notamFailed };
   } catch (error) {
     console.error(`Could not fetch weather for ${icao}:`, error);
+    return { notamFailed: false };
   } finally {
     state.busy.delete(icao);
     if (options.renderFinish !== false) renderCards();
@@ -1901,6 +1915,12 @@ function weatherReportDate(timestamp, reference = new Date()) {
   return candidates.sort((a, b) => Math.abs(a - reference) - Math.abs(b - reference))[0] || null;
 }
 
+async function fetchFreshNotams(icao, airport = state.airports.find(item => item.icao === icao)) {
+  const cached = airport?.notams;
+  if (isCachedNotams(cached) && Number.isFinite(cached.retrievedAt) && Date.now() - cached.retrievedAt < NOTAM_REFRESH_AGE_MS) return cached;
+  return { ...await fetchWorkerNotams(icao), retrievedAt: Date.now() };
+}
+
 function fetchWorkerNotams(icao) {
   const request = notamRequestQueue.then(async () => {
     const delay = Math.max(0, 1200 - (Date.now() - lastNotamRequestAt));
@@ -2111,39 +2131,68 @@ function resolveTafFmDate(validityStart, validityEnd, day, hour, minute = 0) {
 async function refreshAll(options = {}) {
   const activeAirports = state.nearbyMode ? [] : airportsInActiveGroup();
   const activeCodes = new Set(activeAirports.map(airport => airport.icao));
-  const otherAirports = state.airports.filter(airport => !activeCodes.has(airport.icao));
-  const airports = [...activeAirports, ...otherAirports];
-  if (!airports.length) {
+  const permanentCodes = new Set(BUILTIN_GROUPS.flatMap(group => group.airports));
+  const otherAirports = state.airports.filter(airport => !activeCodes.has(airport.icao) && !airport.builtinOnly);
+  const otherCodes = new Set(otherAirports.map(airport => airport.icao));
+  const permanentAirports = state.airports.filter(airport => permanentCodes.has(airport.icao) && airport.builtinOnly && !activeCodes.has(airport.icao) && !otherCodes.has(airport.icao));
+  const total = new Set([...activeAirports, ...permanentAirports, ...otherAirports].map(airport => airport.icao)).size;
+  if (!total) {
     if (!options.quiet) showStatus('Add an airport before refreshing the weather.');
     return;
   }
-  if (!options.quiet) showStatus(`Refreshing METAR and TAF for ${airports.length} airport${airports.length === 1 ? '' : 's'}…`);
-  if (activeAirports.length) await refreshAirportBatch(activeAirports, { quiet: true, render: false, builtIn: Boolean(state.activeGroup && isBuiltinGroup(state.activeGroup)) });
-  if (otherAirports.length) await refreshAirportBatch(otherAirports, { quiet: true, render: false });
+  if (!options.quiet) showStatus(`Refreshing the active tab first (${activeAirports.length} airport${activeAirports.length === 1 ? '' : 's'}); country tabs follow shortly…`);
+
+  let notamFailures = 0;
+  if (activeAirports.length) {
+    notamFailures += await refreshAirportBatch(activeAirports, {
+      quiet: true,
+      render: false,
+      builtIn: Boolean(state.activeGroup && isBuiltinGroup(state.activeGroup)),
+      skipNotams: false
+    });
+  }
+
+  if (otherAirports.length) {
+    if (!options.quiet) showStatus('Active tab refreshed. Updating your other airport tabs…');
+    notamFailures += await refreshAirportBatch(otherAirports, { quiet: true, render: false });
+  }
+
+  if (permanentAirports.length) {
+    if (!options.quiet) showStatus('Your airport tabs refreshed. Updating All Sweden, All Finland and All Norway…');
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    notamFailures += await refreshAirportBatch(permanentAirports, { quiet: true, render: false, builtIn: true });
+  }
+
   renderCards();
-  if (!options.quiet) showStatus('Weather update complete across all groups.');
+  if (!options.quiet) showStatus(notamFailures
+    ? `Weather updated, but NOTAM refresh failed for ${notamFailures} airport${notamFailures === 1 ? '' : 's'}; saved data was kept.`
+    : 'Weather update complete across all groups.', Boolean(notamFailures));
 }
 
 async function refreshAirportBatch(airports, options = {}) {
   const uniqueAirports = [...new Map(airports.map(airport => [airport.icao, airport])).values()];
   if (!uniqueAirports.length) return;
   let next = 0;
+  let notamFailures = 0;
   const workers = Array.from({ length: Math.min(6, uniqueAirports.length) }, async () => {
     while (next < uniqueAirports.length) {
       const airport = uniqueAirports[next++];
       const builtIn = options.builtIn || airport.builtinOnly;
-      await refreshAirport(airport.icao, {
+      const result = await refreshAirport(airport.icao, {
+        quiet: true,
         renderStart: false,
         renderFinish: false,
-        skipNotams: builtIn,
-        skipRunways: builtIn
+        skipNotams: options.skipNotams ?? builtIn,
+        skipRunways: options.skipRunways ?? builtIn
       });
+      if (result?.notamFailed) notamFailures += 1;
     }
   });
   const refreshes = Promise.all(workers);
   renderCards();
   await refreshes;
   if (options.render !== false) renderCards();
+  return notamFailures;
 }
 
 function updateAirportGroupMembership(input) {
