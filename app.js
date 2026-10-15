@@ -61,6 +61,11 @@ document.addEventListener('DOMContentLoaded', init);
 
 function init() {
   document.getElementById('app-version').textContent = `v${APP_VERSION}`;
+  if (screen.orientation?.lock) {
+    screen.orientation.lock('portrait').catch(error => {
+      console.info('Portrait orientation lock is unavailable in this browser context:', error);
+    });
+  }
   if (window.isSecureContext && 'serviceWorker' in navigator) {
     checkForUpdates({ automatic: true });
   }
@@ -1188,6 +1193,38 @@ function renderCards() {
     else state.expandedWind.add(key);
     renderCards();
   }));
+  grid.querySelectorAll('.airport-card').forEach(card => {
+    let longPressTimer = null;
+    let suppressClick = false;
+    card.addEventListener('pointerdown', event => {
+      if (event.pointerType !== 'touch' || event.target.closest('button, input, select, textarea, a, summary, details')) return;
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        suppressClick = true;
+        grid.querySelectorAll('.airport-card.controls-visible').forEach(other => other.classList.remove('controls-visible'));
+        card.classList.add('controls-visible');
+      }, 550);
+    });
+    const cancelLongPress = () => {
+      if (longPressTimer !== null) clearTimeout(longPressTimer);
+      longPressTimer = null;
+    };
+    card.addEventListener('pointerup', cancelLongPress);
+    card.addEventListener('pointercancel', cancelLongPress);
+    card.addEventListener('pointerleave', cancelLongPress);
+    card.addEventListener('contextmenu', event => {
+      if (event.target.closest('button, input, select, textarea, a, summary, details')) return;
+      event.preventDefault();
+      grid.querySelectorAll('.airport-card.controls-visible').forEach(other => other.classList.remove('controls-visible'));
+      card.classList.add('controls-visible');
+    });
+    card.addEventListener('click', event => {
+      if (!suppressClick) return;
+      suppressClick = false;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+  });
   grid.querySelectorAll('.drag-handle').forEach(handle => handle.addEventListener('dragstart', event => {
     const card = handle.closest('.airport-card');
     event.dataTransfer.effectAllowed = 'move';
@@ -1417,8 +1454,12 @@ function closeNotamPanel() {
 
 function renderGroupMembership(icao) {
   const memberships = state.groups.filter(group => group.airports.includes(icao));
+  return `<details class="group-membership"><summary aria-label="Manage groups for ${icao}">Groups ${memberships.length}</summary><div class="group-membership-options">${renderGroupMembershipOptions(icao)}</div></details>`;
+}
+
+function renderGroupMembershipOptions(icao) {
   const options = state.groups.map(group => `<label class="group-membership-option"><input type="checkbox" data-membership-icao="${icao}" data-membership-group="${escapeHtml(group.id)}" ${group.airports.includes(icao) ? 'checked' : ''} ${isBuiltinGroup(group.id) ? 'disabled' : ''}><span>${escapeHtml(group.name)}</span></label>`).join('');
-  return `<details class="group-membership"><summary aria-label="Manage groups for ${icao}">Groups ${memberships.length}</summary><div class="group-membership-options">${options || '<span class="group-empty">Add a group in the sidebar.</span>'}</div></details>`;
+  return options || '<span class="group-empty">Add a group in the sidebar.</span>';
 }
 
 function isPossibleAlternate(airport) {
