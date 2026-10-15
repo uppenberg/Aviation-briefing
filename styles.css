@@ -97,7 +97,7 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .subtitle { margin-bottom: 0; color: #8d9ba4; font-size: 12px; }
 .updated-label { padding-bottom: 3px; color: #71818b; font: 10px var(--mono); text-align: right; }
 .airport-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 16px; align-items: start; }
-.airport-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 7px 25px #050b1020; }
+.airport-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 7px 25px #050b1020; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .card-head { display: flex; align-items: center; gap: 5px; min-height: 58px; padding: 8px 9px; border-bottom: 1px solid var(--line); }
 .drag-handle { flex: 0 0 auto; width: 16px; padding: 0; border: 0; background: transparent; color: #738692; cursor: grab; font-size: 18px; line-height: 1; letter-spacing: -4px; }
 .drag-handle:hover { color: var(--accent); }
@@ -113,7 +113,7 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 }
 .airport-card.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px #78d4bd55, 0 7px 25px #050b1020; }
 .card-select, .group-membership { display: none; visibility: hidden; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
-.airport-card:focus-within .card-select, .airport-card:focus-within .group-membership, .airport-card.controls-visible .card-select, .airport-card.controls-visible .group-membership { display: block; visibility: visible; opacity: 1; pointer-events: auto; }
+.airport-card:has(:focus-visible) .card-select, .airport-card:has(:focus-visible) .group-membership, .airport-card.controls-visible .card-select, .airport-card.controls-visible .group-membership { display: block; visibility: visible; opacity: 1; pointer-events: auto; }
 .card-select { flex: 0 0 auto; width: 15px; height: 15px; accent-color: #67cbb1; cursor: pointer; }
 .airport-ident { min-width: 0; flex: 1; }
 .airport-code { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0; font: 600 19px var(--display); letter-spacing: .04em; }
