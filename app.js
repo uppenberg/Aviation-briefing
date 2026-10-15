@@ -1156,7 +1156,7 @@ function renderCards() {
   grid.querySelectorAll('[data-history-toggle]').forEach(button => button.addEventListener('click', () => {
     toggleMetarHistory(button.dataset.historyToggle);
   }));
-  grid.querySelectorAll('.weather-condition').forEach(button => button.addEventListener('click', () => {
+  grid.querySelectorAll('[data-tooltip]').forEach(button => button.addEventListener('click', () => {
     showStatus(button.dataset.tooltip);
   }));
   document.getElementById('nearby-taf').classList.toggle('active', state.nearbyMode);
@@ -1398,7 +1398,10 @@ function renderCard(airport, nearby = false) {
   const notamActions = notams?.allNotams.length
     ? `${renderNotamButton(airport.icao, 'notam', `NOTAM ${notams.allNotams.length}`)}${notams.filteredNotams.length ? renderNotamButton(airport.icao, 'hours', `OP HRS ${notams.filteredNotams.length}`) : ''}`
     : '';
-  const alternateBadge = nearby || isPossibleAlternate(airport) ? ' <span class="alternate-badge" title="Possible alternate">POSSIBLE ALT</span>' : '';
+  const alternateTooltip = 'Possible alternate criteria: TAF covers the full assessment window; visibility ≥ 1,400 m; BKN/OVC ceiling > 399 ft; no TS. Window: DEP–ARR if set, otherwise the next 3 hours.';
+  const alternateBadge = nearby || isPossibleAlternate(airport)
+    ? ` <button class="alternate-badge" type="button" data-tooltip="${alternateTooltip}" title="${alternateTooltip}" aria-label="${alternateTooltip}">POSSIBLE ALT</button>`
+    : '';
   const cardActions = nearby
     ? `<button class="button nearby-add" type="button" data-add-nearby="${airport.icao}" ${isAirportInUserBriefing(airport.icao) ? 'disabled' : ''}>${isAirportInUserBriefing(airport.icao) ? 'Added' : '＋ Add to briefing'}</button>`
     : `${renderGroupMembership(airport.icao)}<button class="icon-button" data-remove="${airport.icao}" title="Remove ${airport.icao}" aria-label="Remove ${airport.icao}">×</button>`;
