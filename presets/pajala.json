@@ -1,0 +1,30 @@
+{
+  "format": "aviation-briefing-saved-inputs",
+  "version": 1,
+  "airports": [],
+  "groups": [
+    { "id": "group-1792061633842-gubjw", 
+    "name": "Pajala", 
+    "color": "#203735", 
+    "airports": 
+    [
+     "ESUP",
+     "ESPA",
+     "ESNU",
+     "ESNS",
+     "ESNG",
+     "ESNQ",
+     "ESNK",
+     "ESNZ",
+     "EFKT",
+     "EFRO",
+     "ENBO",
+     "ENVA",
+     "ENRO",
+     "ESNN",
+     "EFVA",
+     "EFKK"
+    ] 
+    }
+  ]
+}

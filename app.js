@@ -8,6 +8,7 @@ const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const METAR_REFRESH_AGE_MS = 20 * 60 * 1000;
 const TAF_REFRESH_AGE_MS = 3 * 60 * 60 * 1000;
 const NOTAM_REFRESH_AGE_MS = 5 * 60 * 1000;
+const METAR_EXPIRED_AGE_MS = 35 * 60 * 1000;
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
 const OURAIRPORTS_NAVAIDS_URL = 'https://davidmegginson.github.io/ourairports-data/navaids.csv';
 const OURAIRPORTS_AIRPORTS_URL = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
@@ -27,6 +28,7 @@ const BUILTIN_AIRPORT_ICAOS = new Set(BUILTIN_GROUPS.flatMap(group => group.airp
 let airportCsvPromise = null;
 let runwayCsvPromise = null;
 let navaidCsvPromise = null;
+let metarExpiryTimer = null;
 let notamRequestQueue = Promise.resolve();
 let lastNotamRequestAt = 0;
 const state = {
@@ -898,11 +900,11 @@ function removeAirport(icao) {
 function airportsInActiveGroup() {
   if (!state.activeGroup) return state.airports.filter(item => !item.builtinOnly);
   const group = state.groups.find(item => item.id === state.activeGroup);
-  if (group && isBuiltinGroup(group.id)) {
+  if (group) {
     const airportByCode = new Map(state.airports.map(airport => [airport.icao, airport]));
     return group.airports.map(icao => airportByCode.get(icao)).filter(Boolean);
   }
-  return group ? state.airports.filter(item => group.airports.includes(item.icao)) : state.airports;
+  return state.airports;
 }
 
 function render() {
@@ -990,6 +992,7 @@ function renderSidebar() {
 
 function renderCards() {
   const grid = document.getElementById('airport-grid');
+  scheduleMetarExpiry();
   const airports = state.nearbyMode ? state.nearbyResults : airportsInActiveGroup();
   const empty = document.getElementById('empty-state');
   const selectedTime = state.arrivalTime || state.departureTime;
@@ -1213,6 +1216,7 @@ function renderCard(airport, nearby = false) {
   const metar = airport.metar || {};
   const taf = airport.taf || {};
   const tafExpired = isTafExpired(taf);
+  const metarExpired = isMetarExpired(metar);
   const loading = state.busy.has(airport.icao);
   const metarText = metar.raw || (loading ? 'Loading current observation…' : metar.error || 'No METAR available.');
   const tafText = taf.raw || (loading ? 'Loading forecast…' : taf.error || 'No TAF available.');
@@ -1234,7 +1238,7 @@ function renderCard(airport, nearby = false) {
       <div class="card-actions">${cardActions}</div>
     </header>
     <section class="weather-block">
-      ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw, 'metar', airport) : escapeHtml(metarText), metar.error ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null)}
+      ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw, 'metar', airport) : escapeHtml(metarText), metar.error ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null, metarExpired ? '<span class="taf-expired" title="METAR is older than 35 minutes">[EXPIRED]</span>' : '')}
       ${renderWeatherRunwayPanel(airport, 'metar')}
       ${renderMetarHistoryPanel(airport)}
     </section>
@@ -1695,6 +1699,29 @@ function isTafExpired(report, now = new Date()) {
   const reference = Number.isFinite(report.retrievedAt) ? new Date(report.retrievedAt) : now;
   const range = resolveTafCalendarRange(reference, validity.slice(1).map(Number));
   return Boolean(range && range.end <= now);
+}
+
+function isMetarExpired(report, now = new Date()) {
+  if (!isCachedReport(report)) return false;
+  const reportDate = weatherReportDate(report.time || timestampFromMetar(report.raw), now);
+  return Boolean(reportDate && now.getTime() - reportDate.getTime() >= METAR_EXPIRED_AGE_MS);
+}
+
+function scheduleMetarExpiry() {
+  if (metarExpiryTimer !== null) clearTimeout(metarExpiryTimer);
+  metarExpiryTimer = null;
+  const now = Date.now();
+  const nextExpiry = [...state.airports, ...state.nearbyResults]
+    .filter(airport => isCachedReport(airport.metar))
+    .map(airport => weatherReportDate(airport.metar.time || timestampFromMetar(airport.metar.raw), new Date(now)))
+    .filter(reportDate => reportDate && reportDate.getTime() + METAR_EXPIRED_AGE_MS > now)
+    .reduce((earliest, reportDate) => Math.min(earliest, reportDate.getTime() + METAR_EXPIRED_AGE_MS), Infinity);
+  if (Number.isFinite(nextExpiry)) {
+    metarExpiryTimer = setTimeout(() => {
+      metarExpiryTimer = null;
+      renderCards();
+    }, nextExpiry - now);
+  }
 }
 
 function resolveTafDayTime(reference, day, hour, minute, flightWindow) {
@@ -2224,13 +2251,20 @@ function updateAirportGroupMembership(input) {
 function reorderVisibleAirports(sourceIcao, targetIcao) {
   if (!sourceIcao || sourceIcao === targetIcao) return;
   const ordered = airportsInActiveGroup().slice();
-  const visibleIds = new Set(ordered.map(airport => airport.icao));
   const from = ordered.findIndex(airport => airport.icao === sourceIcao);
   const to = ordered.findIndex(airport => airport.icao === targetIcao);
   if (from < 0 || to < 0) return;
   ordered.splice(to, 0, ordered.splice(from, 1)[0]);
-  let visibleIndex = 0;
-  state.airports = state.airports.map(airport => visibleIds.has(airport.icao) ? ordered[visibleIndex++] : airport);
+  const activeGroup = state.groups.find(group => group.id === state.activeGroup);
+  if (activeGroup && !isBuiltinGroup(activeGroup.id)) {
+    const groupFrom = activeGroup.airports.indexOf(sourceIcao);
+    const groupTo = activeGroup.airports.indexOf(targetIcao);
+    activeGroup.airports.splice(groupTo, 0, activeGroup.airports.splice(groupFrom, 1)[0]);
+  } else {
+    const visibleIds = new Set(ordered.map(airport => airport.icao));
+    let visibleIndex = 0;
+    state.airports = state.airports.map(airport => visibleIds.has(airport.icao) ? ordered[visibleIndex++] : airport);
+  }
   saveState();
   render();
 }

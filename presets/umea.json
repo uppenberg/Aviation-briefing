@@ -1,24 +1,10 @@
 {
   "format": "aviation-briefing-saved-inputs",
   "version": 1,
-  "exportedAt": "2026-10-14T16:58:05.661Z",
-  "airports": [
-    "ESNU",
-    "ESNZ",
-    "ESPA",
-    "ESNS",
-    "ESNN",
-    "ESNK",
-    "ENVA",
-    "ENRO",
-    "EFVA",
-    "EFKK",
-    "EFTP",
-    "EFJY"
-  ],
+  "airports": [],
   "groups": [
     {
-      "id": "group-1791996250418-y0k9s",
+      "id": "group-1792061633842-gubjw",
       "name": "Umeå",
       "color": "#203735",
       "airports": [
@@ -36,10 +22,5 @@
         "EFJY"
       ]
     }
-  ],
-  "activeGroup": "group-1791996250418-y0k9s",
-  "nearby": {
-    "radiusNm": 100,
-    "destinationIcao": ""
-  }
+  ]
 }
