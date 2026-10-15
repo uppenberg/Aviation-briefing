@@ -7,7 +7,7 @@ const RUNWAY_CACHE_PREFIX = 'aviation-briefing-runways-';
 const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const METAR_REFRESH_AGE_MS = 20 * 60 * 1000;
 const TAF_REFRESH_AGE_MS = 3 * 60 * 60 * 1000;
-const NOTAM_REFRESH_AGE_MS = 5 * 60 * 1000;
+const NOTAM_REFRESH_AGE_MS = 4 * 60 * 60 * 1000;
 const METAR_EXPIRED_AGE_MS = 35 * 60 * 1000;
 const AWOS_SUPPORTED_ICAOS = new Set('EKAR EKSI ESSB ESGG ESNL ESKM ESUP ESNG ESMX ESOK ESND ESGP ESSL ESMS ESOW ESOH ESNX ESNK ESNV ESMK ESOE ESGT ESKN ESGJ ESUT ESNS EDAZ ESSA'.split(' '));
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
@@ -124,6 +124,7 @@ function init() {
     document.getElementById('app-update-prompt').hidden = true;
   });
   document.getElementById('export-saved-inputs').addEventListener('click', exportSavedInputs);
+  document.getElementById('force-refresh-notams').addEventListener('click', forceRefreshNotams);
   document.getElementById('import-saved-inputs').addEventListener('click', () => {
     const input = document.getElementById('import-saved-inputs-file');
     input.value = '';
@@ -1225,15 +1226,22 @@ function renderCards() {
       event.stopImmediatePropagation();
     }, true);
   });
-  grid.querySelectorAll('.drag-handle').forEach(handle => handle.addEventListener('dragstart', event => {
+  grid.querySelectorAll('.drag-handle').forEach(handle => {
     const card = handle.closest('.airport-card');
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', card.dataset.airport);
-    card.classList.add('dragging');
-  }));
-  grid.querySelectorAll('.drag-handle').forEach(handle => handle.addEventListener('dragend', () => {
-    grid.querySelectorAll('.airport-card').forEach(card => card.classList.remove('dragging', 'drag-over'));
-  }));
+    handle.addEventListener('pointerdown', () => card.classList.add('reorder-grabbed'));
+    handle.addEventListener('pointerup', () => {
+      if (!card.classList.contains('dragging')) card.classList.remove('reorder-grabbed');
+    });
+    handle.addEventListener('pointercancel', () => card.classList.remove('reorder-grabbed'));
+    handle.addEventListener('dragstart', event => {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', card.dataset.airport);
+      card.classList.add('dragging');
+    });
+    handle.addEventListener('dragend', () => {
+      grid.querySelectorAll('.airport-card').forEach(item => item.classList.remove('dragging', 'drag-over', 'reorder-grabbed'));
+    });
+  });
   grid.querySelectorAll('.airport-card').forEach(card => {
     card.addEventListener('dragover', event => {
       event.preventDefault();
@@ -1390,7 +1398,7 @@ function renderCard(airport, nearby = false) {
   const notamActions = notams?.allNotams.length
     ? `${renderNotamButton(airport.icao, 'notam', `NOTAM ${notams.allNotams.length}`)}${notams.filteredNotams.length ? renderNotamButton(airport.icao, 'hours', `OP HRS ${notams.filteredNotams.length}`) : ''}`
     : '';
-  const alternateBadge = nearby || isPossibleAlternate(airport) ? ' <span class="alternate-badge">[Possible alternate]</span>' : '';
+  const alternateBadge = nearby || isPossibleAlternate(airport) ? ' <span class="alternate-badge" title="Possible alternate">POSSIBLE ALT</span>' : '';
   const cardActions = nearby
     ? `<button class="button nearby-add" type="button" data-add-nearby="${airport.icao}" ${isAirportInUserBriefing(airport.icao) ? 'disabled' : ''}>${isAirportInUserBriefing(airport.icao) ? 'Added' : '＋ Add to briefing'}</button>`
     : `${renderGroupMembership(airport.icao)}<button class="icon-button" data-remove="${airport.icao}" title="Remove ${airport.icao}" aria-label="Remove ${airport.icao}">×</button>`;
@@ -2112,30 +2120,31 @@ function weatherReportDate(timestamp, reference = new Date()) {
   return candidates.sort((a, b) => Math.abs(a - reference) - Math.abs(b - reference))[0] || null;
 }
 
-async function fetchFreshNotams(icao, airport = state.airports.find(item => item.icao === icao)) {
+async function fetchFreshNotams(icao, airport = state.airports.find(item => item.icao === icao), force = false) {
   const cached = airport?.notams;
-  if (isCachedNotams(cached) && Number.isFinite(cached.retrievedAt) && Date.now() - cached.retrievedAt < NOTAM_REFRESH_AGE_MS) return cached;
-  return { ...await fetchWorkerNotams(icao), retrievedAt: Date.now() };
+  if (!force && isCachedNotams(cached) && Number.isFinite(cached.retrievedAt) && Date.now() - cached.retrievedAt < NOTAM_REFRESH_AGE_MS) return cached;
+  return { ...await fetchWorkerNotams(icao, force), retrievedAt: Date.now() };
 }
 
-function fetchWorkerNotams(icao) {
+function fetchWorkerNotams(icao, force = false) {
   const request = notamRequestQueue.then(async () => {
     const delay = Math.max(0, 1200 - (Date.now() - lastNotamRequestAt));
     if (lastNotamRequestAt && delay) await new Promise(resolve => setTimeout(resolve, delay));
     lastNotamRequestAt = Date.now();
-    return fetchWorkerNotamsNow(icao);
+    return fetchWorkerNotamsNow(icao, force);
   });
   notamRequestQueue = request.catch(() => {});
   return request;
 }
 
-async function fetchWorkerNotamsNow(icao) {
+async function fetchWorkerNotamsNow(icao, force = false) {
   const url = new URL(WEATHER_WORKER_URL);
   url.searchParams.set('icao', icao);
   url.searchParams.set('product', 'notam');
-  const response = await fetch(url.toString());
+  if (force) url.searchParams.set('_', String(Date.now()));
+  const response = await fetch(url.toString(), force ? { cache: 'no-store' } : undefined);
   const body = await response.text();
-  if (!response.ok) throw new Error(`NOTAM proxy returned HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`NOTAM proxy returned HTTP ${response.status}: ${body}`);
   let data;
   try { data = JSON.parse(body); } catch { throw new Error('NOTAM proxy did not return JSON.'); }
   if (!Array.isArray(data?.allNotams) || !Array.isArray(data?.filteredNotams)) {
@@ -2412,6 +2421,49 @@ async function refreshAirportBatch(airports, options = {}) {
   await refreshes;
   if (options.render !== false) renderCards();
   return notamFailures;
+}
+
+async function forceRefreshNotams() {
+  const button = document.getElementById('force-refresh-notams');
+  const airports = [...new Map(state.airports
+    .map(airport => [airport.icao, airport])).values()];
+  if (!airports.length) {
+    showStatus('There are no airports in your briefing or All lists to refresh.');
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = 'Refreshing NOTAMs…';
+  showStatus(`Force-refreshing NOTAMs one at a time for ${airports.length} airports in your groups and All lists…`);
+  let failures = 0;
+  let updated = 0;
+  let stoppedForAuthError = false;
+  try {
+    for (const [index, airport] of airports.entries()) {
+      showStatus(`Force-refreshing NOTAM ${index + 1}/${airports.length}: ${airport.icao}…`);
+      try {
+        airport.notams = await fetchFreshNotams(airport.icao, airport, true);
+        updated += 1;
+      } catch (error) {
+        failures += 1;
+        console.warn(`Could not force-refresh NOTAMs for ${airport.icao}:`, error);
+        if (/HTTP 403\b/.test(error.message)) {
+          stoppedForAuthError = true;
+          break;
+        }
+      }
+    }
+    if (updated) saveState();
+    renderCards();
+    showStatus(stoppedForAuthError
+      ? `Force refresh stopped after an authorization error at ${airports[updated + failures - 1]?.icao}. Updated ${updated}; saved data was kept for the remaining airports.`
+      : failures
+      ? `Force-refreshed NOTAMs for ${updated} airport${updated === 1 ? '' : 's'}; failed for ${failures}. Saved data was kept for failures.`
+      : `Force-refreshed NOTAMs for ${updated} airport${updated === 1 ? '' : 's'}.`);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Force refresh NOTAM';
+  }
 }
 
 function updateAirportGroupMembership(input) {

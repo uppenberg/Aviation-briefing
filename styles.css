@@ -98,19 +98,27 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .updated-label { padding-bottom: 3px; color: #71818b; font: 10px var(--mono); text-align: right; }
 .airport-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 16px; align-items: start; }
 .airport-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); box-shadow: 0 7px 25px #050b1020; }
-.card-head { display: flex; align-items: center; gap: 9px; min-height: 58px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
-.drag-handle { flex: 0 0 auto; width: 20px; padding: 0; border: 0; background: transparent; color: #738692; cursor: grab; font-size: 19px; line-height: 1; letter-spacing: -4px; }
+.card-head { display: flex; align-items: center; gap: 5px; min-height: 58px; padding: 8px 9px; border-bottom: 1px solid var(--line); }
+.drag-handle { flex: 0 0 auto; width: 16px; padding: 0; border: 0; background: transparent; color: #738692; cursor: grab; font-size: 18px; line-height: 1; letter-spacing: -4px; }
 .drag-handle:hover { color: var(--accent); }
 .drag-handle:active { cursor: grabbing; }
 .airport-card.dragging { opacity: .42; }
+.airport-card.reorder-grabbed { animation: reorder-wiggle .48s ease-in-out infinite; border-color: var(--accent); }
+@keyframes reorder-wiggle {
+  0%, 100% { transform: rotate(-.35deg); }
+  50% { transform: rotate(.35deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .airport-card.reorder-grabbed { animation: none; }
+}
 .airport-card.drag-over { border-color: var(--accent); box-shadow: 0 0 0 1px #78d4bd55, 0 7px 25px #050b1020; }
-.card-select, .group-membership { visibility: hidden; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
-.airport-card:focus-within .card-select, .airport-card:focus-within .group-membership, .airport-card.controls-visible .card-select, .airport-card.controls-visible .group-membership { visibility: visible; opacity: 1; pointer-events: auto; }
+.card-select, .group-membership { display: none; visibility: hidden; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+.airport-card:focus-within .card-select, .airport-card:focus-within .group-membership, .airport-card.controls-visible .card-select, .airport-card.controls-visible .group-membership { display: block; visibility: visible; opacity: 1; pointer-events: auto; }
 .card-select { flex: 0 0 auto; width: 15px; height: 15px; accent-color: #67cbb1; cursor: pointer; }
 .airport-ident { min-width: 0; flex: 1; }
-.airport-code { margin: 0; font: 600 19px var(--display); letter-spacing: .04em; }
-.alternate-badge { display: inline-block; margin-left: 6px; padding: 3px 6px; border: 1px solid #6898d7; border-radius: 4px; background: #274f83; color: #f0f6ff; font: 600 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; box-shadow: 0 0 0 1px #0a1522; }
-.notam-badge { display: inline-block; margin-left: 6px; padding: 3px 5px; border: 1px solid #5a4d35; border-radius: 4px; background: rgba(185, 133, 58, .16); color: #edca88; font: 500 9px/1.3 var(--mono); letter-spacing: 0; vertical-align: middle; cursor: pointer; }
+.airport-code { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0; font: 600 19px var(--display); letter-spacing: .04em; }
+.alternate-badge { display: inline-block; padding: 2px 4px; border: 1px solid #6898d7; border-radius: 4px; background: #274f83; color: #f0f6ff; font: 600 8px/1.3 var(--mono); letter-spacing: 0; white-space: nowrap; vertical-align: middle; box-shadow: 0 0 0 1px #0a1522; }
+.notam-badge { display: inline-block; margin: 0; padding: 2px 4px; border: 1px solid #5a4d35; border-radius: 4px; background: rgba(185, 133, 58, .16); color: #edca88; font: 500 8px/1.3 var(--mono); letter-spacing: 0; white-space: nowrap; vertical-align: middle; cursor: pointer; }
 .notam-badge:hover { border-color: #9b7a43; background: rgba(185, 133, 58, .25); }
 .nswc-overlay { position: fixed; z-index: 80; inset: 0; display: flex; background: #050a0e; touch-action: pan-x pan-y pinch-zoom; }
 .nswc-overlay[hidden] { display: none; }
@@ -136,6 +144,8 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .notam-entry p, .notam-content > p { margin: 0; color: #d7e1e4; font: 11px/1.65 var(--mono); white-space: pre-line; overflow-wrap: anywhere; }
 @media (hover: hover) {
   .airport-card:hover .card-select, .airport-card:hover .group-membership { visibility: visible; opacity: 1; pointer-events: auto; }
+  .airport-card:hover .card-select { display: block; }
+  .airport-card:hover .group-membership { display: block; }
 }
 .card-actions { display: flex; align-items: center; gap: 7px; }
 .group-membership { position: static; color: #b7c3c9; font-size: 10px; }

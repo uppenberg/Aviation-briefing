@@ -149,7 +149,10 @@ async function getNotams(icao, env) {
       const raw = String(translated || `${core.number ? `${core.number} ` : ''}${core.text || properties.traditionalMessage || properties.text || ''}`).trim();
       if (!raw) continue;
       allNotams.push(simplifyNotam(raw));
-      if (/HOURS OF SERVICE|OPR HR|OPERATING HOURS/i.test(raw)) filteredNotams.push(simplifyNotam(raw));
+      if (!/(?:^|\s)E\)\s*PPR FOR ALL FLIGHTS\b/i.test(raw) && !/^PPR FOR ALL FLIGHTS\b/i.test(raw)
+        && /HOURS OF SERVICE|OPR HR|OPERATING HOURS/i.test(raw)) {
+        filteredNotams.push(simplifyNotam(raw));
+      }
     }
     if (items.length) return { allNotams, filteredNotams };
   }
