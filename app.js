@@ -157,7 +157,7 @@ function init() {
     input.setSelectionRange(pos, pos);
   });
   render();
-  if (state.airports.length) refreshAll({ quiet: true });
+  refreshAll({ quiet: true });
 }
 
 function getSavedNswcImageUrl() {
@@ -214,18 +214,24 @@ function refreshNswc() {
   const url = new URL(NSWC_IMAGE_URL);
   url.searchParams.set('refresh', String(Date.now()));
   status.textContent = 'Refreshing chart…';
-  const latest = new Image();
-  latest.referrerPolicy = 'no-referrer';
-  latest.onload = () => {
-    const image = document.getElementById('nswc-image');
-    image.src = latest.src;
-    try { localStorage.setItem(NSWC_SAVED_URL_KEY, latest.src); } catch { /* Cache API still keeps the fetched image when available. */ }
-    status.textContent = navigator.serviceWorker?.controller
-      ? `Updated ${new Date().toISOString().slice(11, 16)}Z · saved locally`
-      : `Updated ${new Date().toISOString().slice(11, 16)}Z`;
-  };
-  latest.onerror = () => { status.textContent = 'Refresh failed; showing the previously saved chart if available.'; };
-  latest.src = url.href;
+  return new Promise(resolve => {
+    const latest = new Image();
+    latest.referrerPolicy = 'no-referrer';
+    latest.onload = () => {
+      const image = document.getElementById('nswc-image');
+      image.src = latest.src;
+      try { localStorage.setItem(NSWC_SAVED_URL_KEY, latest.src); } catch { /* Cache API still keeps the fetched image when available. */ }
+      status.textContent = navigator.serviceWorker?.controller
+        ? `Updated ${new Date().toISOString().slice(11, 16)}Z · saved locally`
+        : `Updated ${new Date().toISOString().slice(11, 16)}Z`;
+      resolve(true);
+    };
+    latest.onerror = () => {
+      status.textContent = 'Refresh failed; showing the previously saved chart if available.';
+      resolve(false);
+    };
+    latest.src = url.href;
+  });
 }
 
 function loadState() {
@@ -2156,6 +2162,7 @@ function resolveTafFmDate(validityStart, validityEnd, day, hour, minute = 0) {
 }
 
 async function refreshAll(options = {}) {
+  const nswcRefresh = refreshNswc();
   const activeAirports = state.nearbyMode ? [] : airportsInActiveGroup();
   const activeCodes = new Set(activeAirports.map(airport => airport.icao));
   const permanentCodes = new Set(BUILTIN_GROUPS.flatMap(group => group.airports));
@@ -2164,7 +2171,10 @@ async function refreshAll(options = {}) {
   const permanentAirports = state.airports.filter(airport => permanentCodes.has(airport.icao) && airport.builtinOnly && !activeCodes.has(airport.icao) && !otherCodes.has(airport.icao));
   const total = new Set([...activeAirports, ...permanentAirports, ...otherAirports].map(airport => airport.icao)).size;
   if (!total) {
-    if (!options.quiet) showStatus('Add an airport before refreshing the weather.');
+    const nswcUpdated = await nswcRefresh;
+    if (!options.quiet) showStatus(nswcUpdated
+      ? 'NSWC chart updated. Add an airport to refresh the weather.'
+      : 'NSWC chart refresh failed. Add an airport to refresh the weather.', nswcUpdated === false);
     return;
   }
   if (!options.quiet) showStatus(`Refreshing the active tab first (${activeAirports.length} airport${activeAirports.length === 1 ? '' : 's'}); country tabs follow shortly…`);
@@ -2191,9 +2201,17 @@ async function refreshAll(options = {}) {
   }
 
   renderCards();
-  if (!options.quiet) showStatus(notamFailures
-    ? `Weather updated, but NOTAM refresh failed for ${notamFailures} airport${notamFailures === 1 ? '' : 's'}; saved data was kept.`
-    : 'Weather update complete across all groups.', Boolean(notamFailures));
+  const nswcUpdated = await nswcRefresh;
+  if (!options.quiet) {
+    const failures = [];
+    if (notamFailures) failures.push(`NOTAM refresh failed for ${notamFailures} airport${notamFailures === 1 ? '' : 's'}; saved data was kept`);
+    if (nswcUpdated === false) failures.push('NSWC chart refresh failed');
+    showStatus(failures.length
+      ? `Weather updated across all groups, but ${failures.join(' and ')}.`
+      : nswcUpdated
+        ? 'Weather updated across all groups and the NSWC chart was refreshed.'
+        : 'Weather update complete across all groups.', failures.length > 0);
+  }
 }
 
 async function refreshAirportBatch(airports, options = {}) {
