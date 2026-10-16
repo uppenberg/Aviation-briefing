@@ -8,7 +8,7 @@ const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const METAR_REFRESH_AGE_MS = 20 * 60 * 1000;
 const TAF_REFRESH_AGE_MS = 3 * 60 * 60 * 1000;
 const NOTAM_REFRESH_AGE_MS = 4 * 60 * 60 * 1000;
-const METAR_EXPIRED_AGE_MS = 35 * 60 * 1000;
+const METAR_EXPIRED_AGE_MS = 50 * 60 * 1000;
 const AWOS_SUPPORTED_ICAOS = new Set('EKAR EKSI ESSB ESGG ESNL ESKM ESUP ESNG ESMX ESOK ESND ESGP ESSL ESMS ESOW ESOH ESNX ESNK ESNV ESMK ESOE ESGT ESKN ESGJ ESUT ESNS EDAZ ESSA'.split(' '));
 const OURAIRPORTS_RUNWAYS_URL = 'https://davidmegginson.github.io/ourairports-data/runways.csv';
 const OURAIRPORTS_NAVAIDS_URL = 'https://davidmegginson.github.io/ourairports-data/navaids.csv';
@@ -187,23 +187,12 @@ function getSavedNswcImageUrl() {
   }
 }
 
-async function openNswc() {
+function openNswc() {
   const overlay = document.getElementById('nswc-overlay');
   const image = document.getElementById('nswc-image');
   const savedUrl = getSavedNswcImageUrl();
   document.getElementById('nswc-status').textContent = savedUrl === NSWC_IMAGE_URL ? 'Loading latest chart…' : 'Loading saved chart…';
   overlay.hidden = false;
-  if (window.isSecureContext && 'serviceWorker' in navigator) {
-    try {
-      await navigator.serviceWorker.ready;
-      if (!navigator.serviceWorker.controller) {
-        await Promise.race([
-          new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true })),
-          new Promise(resolve => setTimeout(resolve, 2000))
-        ]);
-      }
-    } catch { /* Online display remains available if service worker setup fails. */ }
-  }
   if (image.src === savedUrl && image.complete && image.naturalWidth > 0) {
     document.getElementById('nswc-status').textContent = navigator.serviceWorker?.controller
       ? 'Showing locally saved chart.'
