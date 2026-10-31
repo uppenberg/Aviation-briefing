@@ -68,6 +68,22 @@ self.addEventListener('fetch', event => {
   }
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
 
+  if (url.pathname.endsWith('/version.js')) {
+    event.respondWith((async () => {
+      try {
+        const response = await fetch(request, { cache: 'no-store' });
+        if (response.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(request, response.clone());
+        }
+        return response;
+      } catch {
+        return (await caches.match(request)) || Response.error();
+      }
+    })());
+    return;
+  }
+
   if (request.mode === 'navigate') {
     event.respondWith((async () => {
       try {

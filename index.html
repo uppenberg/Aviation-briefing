@@ -33,26 +33,26 @@
 
     <main class="main-content">
       <header class="topbar">
-        <button class="sidebar-tab" id="open-sidebar" aria-label="Open groups" aria-expanded="false">
-          <span class="tab-icon">▤</span><span>Groups</span><span class="tab-count" id="group-count">0</span>
-        </button>
         <a class="brand" href="." aria-label="Aviation Briefing home">
           <span class="brand-mark">✈</span><span><strong>AVIATION</strong><small>WEATHER BRIEFING</small></span><span class="app-version" id="app-version">v—</span>
         </a>
         <div class="search-wrap">
           <form id="airport-search" class="search-box" role="search">
-            <span class="search-icon" aria-hidden="true">⌕</span>
-            <input id="airport-input" type="search" maxlength="4" autocomplete="off" spellcheck="false" placeholder="Search airport by ICAO, e.g. ESSA" aria-label="Search airport by ICAO code">
+            <label class="search-code-label" for="airport-input">ICAO</label>
+            <input id="airport-input" type="search" maxlength="4" autocomplete="off" spellcheck="false" placeholder="Airport code, e.g. ESSA" aria-label="Search airport by ICAO code">
             <kbd>↵</kbd>
           </form>
-          <span class="search-help">Enter a four-letter ICAO code and press Enter</span>
+          <span class="search-help">Enter a four-letter ICAO airport code</span>
         </div>
         <div class="topbar-actions">
-<a class="button open-foreflight" id="open-foreflight" href="foreflightmobile://" title="Open ForeFlight" role="button" style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center;">Open ForeFlight</a>
+          <button class="sidebar-tab" id="open-sidebar" aria-label="Open groups" aria-expanded="false">
+            <span class="tab-icon">▤</span><span>Groups</span><span class="tab-count" id="group-count">0</span>
+          </button>
+          <a class="button open-foreflight" id="open-foreflight" href="foreflightmobile://" title="Open ForeFlight" role="button" style="text-decoration: none; display: inline-flex; align-items: center; justify-content: center;">Open ForeFlight</a>
           <button class="button nearby-button" id="nearby-taf" type="button" title="Find possible alternates within 100 NM"><span id="nearby-icon" aria-hidden="true">⌖</span><span class="button-label-full" id="nearby-label-full">Nearby Possible Alternates</span><span class="button-label-short" id="nearby-label-short">Nearby</span></button>
           <button class="button refresh-all" id="refresh-all"><span aria-hidden="true">↻</span> <span class="button-label-full">Refresh all</span><span class="button-label-short">Refresh</span></button>
           <button class="button nswc-button" id="open-nswc" type="button" title="Open the latest NSWC chart">NSWC</button>
-          <button class="button settings-button" id="open-settings" type="button" aria-label="Open settings" title="Settings">⚙ <span class="button-label-full">Settings</span><span class="button-label-short">Settings</span></button>
+          <button class="button settings-button" id="open-settings" type="button" aria-label="Open settings" title="Settings"><span aria-hidden="true">⚙</span> <span class="button-label-full">Settings</span><span class="button-label-short">Settings</span></button>
         </div>
       </header>
 

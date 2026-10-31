@@ -5,8 +5,13 @@ const NSWC_IMAGE_URL = 'https://aro.lfv.se/tor/nswc2aro.gif?814183';
 const NSWC_SAVED_URL_KEY = 'aviation-briefing-nswc-image-url';
 const RUNWAY_CACHE_PREFIX = 'aviation-briefing-runways-';
 const RUNWAY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const WEATHER_CACHE_PREFIX = 'aviation-briefing-weather-';
+const NOTAM_CACHE_PREFIX = 'aviation-briefing-notams-';
 const METAR_REFRESH_AGE_MS = 20 * 60 * 1000;
 const TAF_REFRESH_AGE_MS = 3 * 60 * 60 * 1000;
+const WEATHER_REQUEST_INTERVAL_MS = 1000;
+const WEATHER_RATE_LIMIT_RETRIES = 3;
+const WEATHER_BATCH_SIZE = 80;
 const NOTAM_REFRESH_AGE_MS = 4 * 60 * 60 * 1000;
 const METAR_EXPIRED_AGE_MS = 50 * 60 * 1000;
 const AWOS_SUPPORTED_ICAOS = new Set('EKAR EKSI ESSB ESGG ESNL ESKM ESUP ESNG ESMX ESOK ESND ESGP ESSL ESMS ESOW ESOH ESNX ESNK ESNV ESMK ESOE ESGT ESKN ESGJ ESUT ESNS EDAZ ESSA'.split(' '));
@@ -30,8 +35,14 @@ let airportCsvPromise = null;
 let runwayCsvPromise = null;
 let navaidCsvPromise = null;
 let metarExpiryTimer = null;
+let weatherRequestQueue = Promise.resolve();
+let lastWeatherRequestAt = 0;
 let notamRequestQueue = Promise.resolve();
 let lastNotamRequestAt = 0;
+let refreshAllRequest = null;
+let weatherBatchSupported = null;
+let weatherBatchQueue = Promise.resolve();
+const weatherRequests = new Map();
 const awosRequests = new Map();
 const state = {
   airports: [],
@@ -74,6 +85,25 @@ function init() {
   document.getElementById('arr-time').value = state.arrivalTime;
   document.getElementById('airport-search').addEventListener('submit', handleSearch);
   document.getElementById('refresh-all').addEventListener('click', () => refreshAll());
+  let pullStart = null;
+  document.addEventListener('touchstart', event => {
+    if (event.touches.length !== 1 || window.scrollY > 0
+      || event.target.closest('button, input, select, textarea, a, [role="dialog"]')
+      || document.querySelector('.settings-overlay:not([hidden]), .notam-overlay:not([hidden]), .nswc-overlay:not([hidden])')) {
+      pullStart = null;
+      return;
+    }
+    pullStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+  }, { passive: true });
+  document.addEventListener('touchend', event => {
+    if (!pullStart || !event.changedTouches.length) return;
+    const touch = event.changedTouches[0];
+    const distanceY = touch.clientY - pullStart.y;
+    const distanceX = Math.abs(touch.clientX - pullStart.x);
+    pullStart = null;
+    if (window.scrollY <= 0 && distanceY >= 80 && distanceX < 60) refreshAll();
+  }, { passive: true });
+  document.addEventListener('touchcancel', () => { pullStart = null; }, { passive: true });
   document.getElementById('nearby-taf').addEventListener('click', toggleNearbyView);
   document.getElementById('nearby-destination-form').addEventListener('submit', event => {
     event.preventDefault();
@@ -1302,7 +1332,6 @@ async function findNearbyTafAirports(options = {}) {
   state.nearbyResults = [];
   state.nearbyLoading = true;
   state.nearbyHasSearched = true;
-  state.activeGroup = null;
   renderCards();
   try {
     const airports = await fetchNearbyAirportIndex();
@@ -1321,43 +1350,55 @@ async function findNearbyTafAirports(options = {}) {
     const nearby = airports.map(airport => ({ ...airport, distance: distanceNm(origin.lat, origin.lon, airport.lat, airport.lon) }))
       .filter(airport => airport.icao !== origin.icao && airport.distance <= state.nearbyRadiusNm)
       .sort((a, b) => a.distance - b.distance);
+    const tafReports = await fetchFreshWeatherBatch(nearby, ['taf']);
+    const alternates = [];
+    for (const airport of nearby) {
+      const tafResult = tafReports.get(airport.icao)?.taf;
+      if (tafResult?.error) {
+        console.warn(`Could not check TAF for ${airport.icao}:`, tafResult.error);
+        continue;
+      }
+      if (!isCachedReport(tafResult)) continue;
+      const taf = { ...tafResult, retrievedAt: Date.now() };
+      if (!isTafExpired(taf) && assessPossibleAlternate(taf.raw, assessmentWindow)?.possible) {
+        alternates.push({ ...airport, taf });
+      }
+    }
+    const metarReports = await fetchFreshWeatherBatch(alternates, ['metar']);
     let next = 0;
-    const workers = Array.from({ length: Math.min(6, nearby.length) }, async () => {
-      while (next < nearby.length) {
-        const airport = nearby[next++];
+    const workers = Array.from({ length: Math.min(6, alternates.length) }, async () => {
+      while (next < alternates.length) {
+        const airport = alternates[next++];
         try {
-          const taf = await fetchFreshWeather(airport.icao, 'taf');
-          if (isCachedReport(taf)) {
-            const report = { ...taf, retrievedAt: Date.now() };
-            if (!isTafExpired(report) && assessPossibleAlternate(report.raw, assessmentWindow)?.possible) {
-              const savedAirport = state.airports.find(item => item.icao === airport.icao);
-              const [metarResult, runwayResult, variationResult, notamResult] = await Promise.allSettled([
-                fetchFreshWeather(airport.icao, 'metar'),
-                fetchOurAirportsRunways(airport.icao),
-                fetchOurAirportsVariation(airport.icao),
-                fetchFreshNotams(airport.icao, savedAirport)
-              ]);
-              const metar = metarResult.status === 'fulfilled' && isCachedReport(metarResult.value)
-                ? { ...metarResult.value, retrievedAt: Date.now() }
-                : { error: 'No METAR available.' };
-              if (savedAirport && notamResult.status === 'fulfilled') {
-                savedAirport.notams = notamResult.value;
-                saveState();
-              }
-              state.nearbyResults.push({
-                ...airport,
-                taf: report,
-                metar,
-                notams: notamResult.status === 'fulfilled' ? notamResult.value : savedAirport?.notams,
-                runways: runwayResult.status === 'fulfilled' ? runwayResult.value : [],
-                magneticVariation: variationResult.status === 'fulfilled' ? variationResult.value : null
-              });
-              state.nearbyResults.sort((a, b) => a.distance - b.distance);
-              renderCards();
-            }
+          const savedAirport = state.airports.find(item => item.icao === airport.icao);
+          const metarReport = metarReports.get(airport.icao)?.metar;
+          const metarPromise = metarReport?.error
+            ? Promise.reject(metarReport.error)
+            : metarReport ? Promise.resolve(metarReport) : fetchFreshWeather(airport.icao, 'metar');
+          const [metarResult, runwayResult, variationResult, notamResult] = await Promise.allSettled([
+            metarPromise,
+            fetchOurAirportsRunways(airport.icao),
+            fetchOurAirportsVariation(airport.icao),
+            fetchFreshNotams(airport.icao, savedAirport)
+          ]);
+          const metar = metarResult.status === 'fulfilled' && isCachedReport(metarResult.value)
+            ? { ...metarResult.value, retrievedAt: Date.now() }
+            : { error: 'No METAR available.' };
+          if (savedAirport && notamResult.status === 'fulfilled') {
+            savedAirport.notams = notamResult.value;
+            saveState();
           }
+          state.nearbyResults.push({
+            ...airport,
+            metar,
+            notams: notamResult.status === 'fulfilled' ? notamResult.value : savedAirport?.notams,
+            runways: runwayResult.status === 'fulfilled' ? runwayResult.value : [],
+            magneticVariation: variationResult.status === 'fulfilled' ? variationResult.value : null
+          });
+          state.nearbyResults.sort((a, b) => a.distance - b.distance);
+          renderCards();
         } catch (error) {
-          console.warn(`Could not check TAF for ${airport.icao}:`, error);
+          console.warn(`Could not load nearby details for ${airport.icao}:`, error);
         }
       }
     });
@@ -1589,9 +1630,15 @@ async function refreshAirport(icao, options = {}) {
   state.busy.add(icao);
   if (options.renderStart !== false) renderCards();
   try {
+    const getWeather = product => {
+      const batchReport = options.weatherReports?.[product];
+      if (batchReport?.error) return Promise.reject(batchReport.error);
+      if (batchReport) return Promise.resolve(batchReport);
+      return fetchFreshWeather(icao, product, state.airports.find(item => item.icao === icao));
+    };
     const weatherPromise = Promise.allSettled([
-      fetchFreshWeather(icao, 'metar', state.airports.find(item => item.icao === icao)),
-      fetchFreshWeather(icao, 'taf', state.airports.find(item => item.icao === icao))
+      getWeather('metar'),
+      getWeather('taf')
     ]);
     const auxiliaryPromise = Promise.allSettled([
       options.skipNotams ? Promise.resolve(null) : fetchFreshNotams(icao, state.airports.find(item => item.icao === icao)),
@@ -1988,8 +2035,9 @@ function getFlightTargetTime() {
 
 async function fetchOurAirportsRunways(icao) {
   const cacheKey = `${RUNWAY_CACHE_PREFIX}${icao}`;
+  let cached = null;
   try {
-    const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+    cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && cached.expiresAt > Date.now() && Array.isArray(cached.runways)) return cached.runways;
   } catch (error) {
     console.warn(`Could not read the runway cache for ${icao}:`, error);
@@ -2008,7 +2056,13 @@ async function fetchOurAirportsRunways(icao) {
       });
   }
 
-  const index = await runwayCsvPromise;
+  let index;
+  try {
+    index = await runwayCsvPromise;
+  } catch (error) {
+    if (cached && Array.isArray(cached.runways)) return cached.runways;
+    throw error;
+  }
   const runways = index[icao] || [];
   try {
     localStorage.setItem(cacheKey, JSON.stringify({ expiresAt: Date.now() + RUNWAY_CACHE_TTL_MS, runways }));
@@ -2020,8 +2074,9 @@ async function fetchOurAirportsRunways(icao) {
 
 async function fetchOurAirportsVariation(icao) {
   const cacheKey = `${RUNWAY_CACHE_PREFIX}${icao}-variation`;
+  let cached = null;
   try {
-    const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+    cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && cached.expiresAt > Date.now()) return cached.variation;
   } catch (error) {
     console.warn(`Could not read the magnetic variation cache for ${icao}:`, error);
@@ -2035,7 +2090,13 @@ async function fetchOurAirportsVariation(icao) {
       .then(parseNavaidVariations)
       .catch(error => { navaidCsvPromise = null; throw error; });
   }
-  const index = await navaidCsvPromise;
+  let index;
+  try {
+    index = await navaidCsvPromise;
+  } catch (error) {
+    if (cached && Object.prototype.hasOwnProperty.call(cached, 'variation')) return cached.variation;
+    throw error;
+  }
   const variation = index[icao] ?? null;
   try { localStorage.setItem(cacheKey, JSON.stringify({ expiresAt: Date.now() + RUNWAY_CACHE_TTL_MS, variation })); } catch (error) { console.warn(`Could not cache magnetic variation for ${icao}:`, error); }
   return variation;
@@ -2125,12 +2186,48 @@ function splitCsvLine(line) {
   return values;
 }
 
-async function fetchWorkerWeather(icao, product) {
+function fetchWorkerWeather(icao, product) {
   const url = new URL(WEATHER_WORKER_URL);
   url.searchParams.set('icao', icao);
   if (product !== 'metar') url.searchParams.set('product', product);
-  const response = await fetch(url.toString());
-  const body = (await response.text()).trim();
+  return enqueueWeatherRequest(url).then(({ response, body }) => parseWorkerWeatherResponse(icao, product, response, body));
+}
+
+function fetchWorkerWeatherBatch(icaos, products) {
+  const url = new URL(WEATHER_WORKER_URL);
+  url.searchParams.set('product', 'weather-batch');
+  url.searchParams.set('ids', icaos.join(','));
+  url.searchParams.set('products', products.join(','));
+  return enqueueWeatherRequest(url).then(({ response, body }) => {
+    if ([400, 404, 405, 413, 501].includes(response.status)) return { supported: false };
+    if (!response.ok) throw new Error(`Cloudflare Worker svarade HTTP ${response.status}${body ? `: ${body.slice(0, 180)}` : ''}`);
+    let data;
+    try { data = JSON.parse(body); } catch { throw new Error('Cloudflare Worker returned invalid weather batch JSON.'); }
+    if (!data?.reports || typeof data.reports !== 'object') throw new Error('Cloudflare Worker weather batch response is missing reports.');
+    return { supported: true, reports: data.reports };
+  });
+}
+
+function enqueueWeatherRequest(url) {
+  const request = weatherRequestQueue.then(async () => {
+    for (let attempt = 0; ; attempt++) {
+      const delay = Math.max(0, WEATHER_REQUEST_INTERVAL_MS - (Date.now() - lastWeatherRequestAt));
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      lastWeatherRequestAt = Date.now();
+      const response = await fetch(url.toString());
+      const body = (await response.text()).trim();
+      if (response.status === 429 && attempt < WEATHER_RATE_LIMIT_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, 2000 * (2 ** attempt)));
+        continue;
+      }
+      return { response, body };
+    }
+  });
+  weatherRequestQueue = request.catch(() => {});
+  return request;
+}
+
+function parseWorkerWeatherResponse(icao, product, response, body) {
   if (!response.ok) throw new Error(`Cloudflare Worker svarade HTTP ${response.status}${body ? `: ${body.slice(0, 180)}` : ''}`);
   if (!body) return { raw: '', time: '' };
 
@@ -2144,12 +2241,123 @@ async function fetchWorkerWeather(icao, product) {
 }
 
 async function fetchFreshWeather(icao, product, airport = state.airports.find(item => item.icao === icao)) {
-  const cached = airport?.[product];
+  const freshCached = getFreshCachedWeather(icao, product, airport);
+  if (freshCached) return freshCached;
+
+  const requestKey = `${icao}:${product}`;
+  if (!weatherRequests.has(requestKey)) {
+    const request = fetchWorkerWeather(icao, product).then(report => {
+      writeCachedWeather(icao, product, report);
+      return report;
+    }).finally(() => weatherRequests.delete(requestKey));
+    weatherRequests.set(requestKey, request);
+  }
+  return weatherRequests.get(requestKey);
+}
+
+function getFreshCachedWeather(icao, product, airport = state.airports.find(item => item.icao === icao)) {
+  const cachedReports = [airport?.[product], readCachedWeather(icao, product)].filter(isCachedReport);
   const maxAge = product === 'metar' ? METAR_REFRESH_AGE_MS : TAF_REFRESH_AGE_MS;
-  const timestamp = cached?.time || (product === 'metar' ? timestampFromMetar(cached?.raw) : timestampFromTaf(cached?.raw));
-  const reportDate = isCachedReport(cached) ? weatherReportDate(timestamp) : null;
-  if (reportDate && Date.now() - reportDate.getTime() < maxAge) return cached;
-  return fetchWorkerWeather(icao, product);
+  return cachedReports
+    .map(report => ({
+      report,
+      date: weatherReportDate(report.time || (product === 'metar' ? timestampFromMetar(report.raw) : timestampFromTaf(report.raw)))
+    }))
+    .filter(entry => entry.date && Date.now() - entry.date.getTime() < maxAge)
+    .sort((a, b) => b.date - a.date)[0]?.report;
+}
+
+function fetchFreshWeatherBatch(airports, products = ['metar', 'taf']) {
+  const request = weatherBatchQueue.then(() => fetchFreshWeatherBatchNow(airports, products));
+  weatherBatchQueue = request.catch(() => {});
+  return request;
+}
+
+async function fetchFreshWeatherBatchNow(airports, products) {
+  const uniqueAirports = [...new Map(airports.map(airport => [airport.icao, airport])).values()];
+  const reportsByAirport = new Map(uniqueAirports.map(airport => [airport.icao, {}]));
+  const staleProductsByAirport = new Map();
+  for (const airport of uniqueAirports) {
+    for (const product of products) {
+      const cached = getFreshCachedWeather(airport.icao, product, state.airports.find(item => item.icao === airport.icao) || airport);
+      if (cached) reportsByAirport.get(airport.icao)[product] = cached;
+      else {
+        if (!staleProductsByAirport.has(airport.icao)) staleProductsByAirport.set(airport.icao, []);
+        staleProductsByAirport.get(airport.icao).push(product);
+      }
+    }
+  }
+
+  const staleIcaos = [...staleProductsByAirport.keys()];
+  for (let offset = 0; offset < staleIcaos.length; offset += WEATHER_BATCH_SIZE) {
+    const batchIcaos = staleIcaos.slice(offset, offset + WEATHER_BATCH_SIZE);
+    const batchProducts = [...new Set(batchIcaos.flatMap(icao => staleProductsByAirport.get(icao)))];
+    if (weatherBatchSupported === false) {
+      await fetchWeatherIndividually(batchIcaos, staleProductsByAirport, reportsByAirport);
+      continue;
+    }
+
+    try {
+      const result = await fetchWorkerWeatherBatch(batchIcaos, batchProducts);
+      if (!result.supported) {
+        weatherBatchSupported = false;
+        await fetchWeatherIndividually(batchIcaos, staleProductsByAirport, reportsByAirport);
+        continue;
+      }
+      weatherBatchSupported = true;
+      for (const icao of batchIcaos) {
+        for (const product of staleProductsByAirport.get(icao)) {
+          const raw = typeof result.reports[icao]?.[product] === 'string' ? result.reports[icao][product].trim() : '';
+          const expected = product === 'taf' ? /\bTAF\b/ : /^(?:METAR|SPECI)\b/;
+          if (raw && !expected.test(raw)) {
+            reportsByAirport.get(icao)[product] = { error: new Error(`Worker returned invalid ${product.toUpperCase()} data for ${icao}.`) };
+            continue;
+          }
+          const report = { raw, time: product === 'metar' ? timestampFromMetar(raw) : timestampFromTaf(raw) };
+          reportsByAirport.get(icao)[product] = report;
+          if (isCachedReport(report)) writeCachedWeather(icao, product, report);
+        }
+      }
+    } catch (error) {
+      console.warn('Could not fetch weather batch:', error);
+      for (const icao of batchIcaos) {
+        for (const product of staleProductsByAirport.get(icao)) reportsByAirport.get(icao)[product] = { error };
+      }
+    }
+  }
+  return reportsByAirport;
+}
+
+async function fetchWeatherIndividually(icaos, staleProductsByAirport, reportsByAirport) {
+  const requests = [];
+  for (const icao of icaos) {
+    for (const product of staleProductsByAirport.get(icao)) requests.push({ icao, product });
+  }
+  const results = await Promise.allSettled(requests.map(({ icao, product }) => fetchFreshWeather(icao, product)));
+  results.forEach((result, index) => {
+    const { icao, product } = requests[index];
+    reportsByAirport.get(icao)[product] = result.status === 'fulfilled'
+      ? result.value
+      : { error: result.reason };
+  });
+}
+
+function readCachedWeather(icao, product) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(`${WEATHER_CACHE_PREFIX}${icao}-${product}`) || 'null');
+    return isCachedReport(cached) ? cached : null;
+  } catch (error) {
+    console.warn(`Could not read the ${product.toUpperCase()} cache for ${icao}:`, error);
+    return null;
+  }
+}
+
+function writeCachedWeather(icao, product, report) {
+  try {
+    localStorage.setItem(`${WEATHER_CACHE_PREFIX}${icao}-${product}`, JSON.stringify(report));
+  } catch (error) {
+    console.warn(`Could not cache ${product.toUpperCase()} for ${icao}:`, error);
+  }
 }
 
 function weatherReportDate(timestamp, reference = new Date()) {
@@ -2165,9 +2373,32 @@ function weatherReportDate(timestamp, reference = new Date()) {
 }
 
 async function fetchFreshNotams(icao, airport = state.airports.find(item => item.icao === icao), force = false) {
-  const cached = airport?.notams;
+  const cachedLocal = readCachedNotams(icao);
+  const cached = [airport?.notams, cachedLocal]
+    .filter(isCachedNotams)
+    .sort((a, b) => (b.retrievedAt || 0) - (a.retrievedAt || 0))[0];
   if (!force && isCachedNotams(cached) && Number.isFinite(cached.retrievedAt) && Date.now() - cached.retrievedAt < NOTAM_REFRESH_AGE_MS) return cached;
-  return { ...await fetchWorkerNotams(icao, force), retrievedAt: Date.now() };
+  const updated = { ...await fetchWorkerNotams(icao, force), retrievedAt: Date.now() };
+  writeCachedNotams(icao, updated);
+  return updated;
+}
+
+function readCachedNotams(icao) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(`${NOTAM_CACHE_PREFIX}${icao}`) || 'null');
+    return isCachedNotams(cached) ? cached : null;
+  } catch (error) {
+    console.warn(`Could not read the NOTAM cache for ${icao}:`, error);
+    return null;
+  }
+}
+
+function writeCachedNotams(icao, notams) {
+  try {
+    localStorage.setItem(`${NOTAM_CACHE_PREFIX}${icao}`, JSON.stringify(notams));
+  } catch (error) {
+    console.warn(`Could not cache NOTAMs for ${icao}:`, error);
+  }
 }
 
 function fetchWorkerNotams(icao, force = false) {
@@ -2378,7 +2609,18 @@ function resolveTafFmDate(validityStart, validityEnd, day, hour, minute = 0) {
   return candidates[0] || new Date(NaN);
 }
 
-async function refreshAll(options = {}) {
+function refreshAll(options = {}) {
+  if (refreshAllRequest) return refreshAllRequest;
+  const button = document.getElementById('refresh-all');
+  button.disabled = true;
+  refreshAllRequest = runRefreshAll(options).finally(() => {
+    refreshAllRequest = null;
+    button.disabled = false;
+  });
+  return refreshAllRequest;
+}
+
+async function runRefreshAll(options = {}) {
   const nswcRefresh = refreshNswc();
   const awosRefresh = refreshOwnedAwos();
   const activeAirports = state.nearbyMode ? [] : airportsInActiveGroup();
@@ -2445,6 +2687,7 @@ async function refreshAll(options = {}) {
 async function refreshAirportBatch(airports, options = {}) {
   const uniqueAirports = [...new Map(airports.map(airport => [airport.icao, airport])).values()];
   if (!uniqueAirports.length) return;
+  const weatherReports = await fetchFreshWeatherBatch(uniqueAirports);
   let next = 0;
   let notamFailures = 0;
   const workers = Array.from({ length: Math.min(6, uniqueAirports.length) }, async () => {
@@ -2457,7 +2700,8 @@ async function refreshAirportBatch(airports, options = {}) {
         renderFinish: false,
         renderWeatherFinish: options.renderWeather === true,
         skipNotams: options.skipNotams ?? builtIn,
-        skipRunways: options.skipRunways ?? builtIn
+        skipRunways: options.skipRunways ?? builtIn,
+        weatherReports: weatherReports.get(airport.icao)
       });
       if (result?.notamFailed) notamFailures += 1;
     }

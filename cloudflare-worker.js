@@ -3,6 +3,7 @@
 //   FAA_NMS_CLIENT_ID
 //   FAA_NMS_CLIENT_SECRET
 // METAR remains the default product for backward compatibility.
+// The weather-batch product accepts comma-separated ICAO codes; existing single-ICAO routes remain unchanged.
 
 const FAA_AUTH_URL = 'https://api-nms.aim.faa.gov/v1/auth/token';
 const FAA_NMS_URL = 'https://api-nms.aim.faa.gov/nmsapi';
@@ -21,10 +22,31 @@ export default {
     if (request.method !== 'GET') return plain('Method not allowed', 405, cors);
 
     const url = new URL(request.url);
+    const product = (url.searchParams.get('product') || 'metar').trim().toLowerCase();
+    if (product === 'weather-batch') {
+      const requestedIds = (url.searchParams.get('ids') || '').split(',').map(id => id.trim().toUpperCase());
+      const icaos = [...new Set(requestedIds)];
+      const products = [...new Set((url.searchParams.get('products') || 'metar,taf').split(',').map(value => value.trim().toLowerCase()))];
+      if (!requestedIds.length || requestedIds.some(id => !/^[A-Z0-9]{4}$/.test(id))) {
+        return plain('Missing or invalid ICAO codes', 400, cors);
+      }
+      if (icaos.length > 100) return plain('Weather batches are limited to 100 ICAO codes', 413, cors);
+      if (!products.length || products.some(value => value !== 'metar' && value !== 'taf')) {
+        return plain('Weather batches support METAR and TAF only', 400, cors);
+      }
+      try {
+        const reports = await getWeatherBatch(icaos, products);
+        return new Response(JSON.stringify({ reports }), {
+          headers: { ...cors, 'Content-Type': 'application/json;charset=UTF-8', 'Cache-Control': 'public, max-age=60' },
+        });
+      } catch (error) {
+        return plain(`Error fetching weather batch: ${error.message}`, error.status || 502, cors);
+      }
+    }
+
     const icao = (url.searchParams.get('icao') || url.searchParams.get('ids') || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{4}$/.test(icao)) return plain('Missing or invalid ICAO code', 400, cors);
 
-    const product = (url.searchParams.get('product') || 'metar').trim().toLowerCase();
     if (product === 'notam') {
       try {
         const data = await getNotams(icao, env);
@@ -65,6 +87,37 @@ export default {
     }
   },
 };
+
+async function getWeatherBatch(icaos, products) {
+  const responses = await Promise.all(products.map(async product => {
+    const query = new URLSearchParams({ ids: icaos.join(','), format: 'raw' });
+    const response = await fetch(`https://aviationweather.gov/api/data/${product}?${query}`, {
+      headers: { 'User-Agent': 'AviationBriefingApp/1.0 (Personal Aviation Tool)' },
+    });
+    const body = await response.text();
+    if (!response.ok) {
+      const error = new Error(`${product.toUpperCase()} API returned HTTP ${response.status}${body ? `: ${body.slice(0, 180)}` : ''}`);
+      error.status = response.status;
+      throw error;
+    }
+    return { product, body };
+  }));
+  const reports = Object.fromEntries(icaos.map(icao => [icao, Object.fromEntries(products.map(product => [product, '']))]));
+  for (const { product, body } of responses) {
+    const reportPattern = product === 'taf'
+      ? /(?:^|\s)(TAF\s+(?:(?:AMD|COR)\s+)?([A-Z0-9]{4})\b)/g
+      : /(?:^|\s)((?:METAR|SPECI)\s+(?:COR\s+)?([A-Z0-9]{4})\b)/g;
+    const matches = [...body.matchAll(reportPattern)].map(match => ({
+      start: match.index + match[0].length - match[1].length,
+      icao: match[2],
+    }));
+    for (let index = 0; index < matches.length; index++) {
+      const { start, icao } = matches[index];
+      if (reports[icao]) reports[icao][product] = body.slice(start, matches[index + 1]?.start ?? body.length).trim();
+    }
+  }
+  return reports;
+}
 
 async function getAwosReport(icao) {
   const pageResponse = await fetch(`https://wx.awos.se/?siteId=${encodeURIComponent(icao)}`, {
