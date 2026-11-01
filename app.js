@@ -2186,11 +2186,20 @@ function splitCsvLine(line) {
   return values;
 }
 
+function logInfo(message, ...details) {
+  console.info(`[Briefing] ${message}`, ...details);
+}
+
 function fetchWorkerWeather(icao, product) {
   const url = new URL(WEATHER_WORKER_URL);
   url.searchParams.set('icao', icao);
   if (product !== 'metar') url.searchParams.set('product', product);
-  return enqueueWeatherRequest(url).then(({ response, body }) => parseWorkerWeatherResponse(icao, product, response, body));
+  const startedAt = performance.now();
+  return enqueueWeatherRequest(url).then(({ response, body }) => {
+    const report = parseWorkerWeatherResponse(icao, product, response, body);
+    logInfo(`${product.toUpperCase()} hämtad för ${icao} från Cloudflare Worker (enskilt anrop, ${Math.round(performance.now() - startedAt)} ms).`);
+    return report;
+  });
 }
 
 function fetchWorkerWeatherBatch(icaos, products) {
@@ -2217,6 +2226,7 @@ function enqueueWeatherRequest(url) {
       const response = await fetch(url.toString());
       const body = (await response.text()).trim();
       if (response.status === 429 && attempt < WEATHER_RATE_LIMIT_RETRIES) {
+        console.warn(`[Briefing] Worker svarade 429 (för många anrop). Försöker igen om ${2 * (2 ** attempt)} s (försök ${attempt + 1}/${WEATHER_RATE_LIMIT_RETRIES}).`);
         await new Promise(resolve => setTimeout(resolve, 2000 * (2 ** attempt)));
         continue;
       }
@@ -2242,7 +2252,10 @@ function parseWorkerWeatherResponse(icao, product, response, body) {
 
 async function fetchFreshWeather(icao, product, airport = state.airports.find(item => item.icao === icao)) {
   const freshCached = getFreshCachedWeather(icao, product, airport);
-  if (freshCached) return freshCached;
+  if (freshCached) {
+    logInfo(`${product.toUpperCase()} för ${icao} hämtad från cache (ingen Worker-förfrågan).`);
+    return freshCached;
+  }
 
   const requestKey = `${icao}:${product}`;
   if (!weatherRequests.has(requestKey)) {
@@ -2289,6 +2302,7 @@ async function fetchFreshWeatherBatchNow(airports, products) {
   }
 
   const staleIcaos = [...staleProductsByAirport.keys()];
+  logInfo(`Väderuppdatering: ${uniqueAirports.length} flygplatser, ${uniqueAirports.length - staleIcaos.length} helt från cache, ${staleIcaos.length} hämtas från Worker.`);
   for (let offset = 0; offset < staleIcaos.length; offset += WEATHER_BATCH_SIZE) {
     const batchIcaos = staleIcaos.slice(offset, offset + WEATHER_BATCH_SIZE);
     const batchProducts = [...new Set(batchIcaos.flatMap(icao => staleProductsByAirport.get(icao)))];
@@ -2298,13 +2312,16 @@ async function fetchFreshWeatherBatchNow(airports, products) {
     }
 
     try {
+      const batchStartedAt = performance.now();
       const result = await fetchWorkerWeatherBatch(batchIcaos, batchProducts);
       if (!result.supported) {
+        console.warn('[Briefing] Workern saknar batch-stöd – använder enskilda anrop (uppdatera Workern för färre anrop).');
         weatherBatchSupported = false;
         await fetchWeatherIndividually(batchIcaos, staleProductsByAirport, reportsByAirport);
         continue;
       }
       weatherBatchSupported = true;
+      logInfo(`${batchProducts.map(product => product.toUpperCase()).join('+')} hämtad från Cloudflare Worker (batch): ${batchIcaos.length} flygplatser i 1 anrop, ${Math.round(performance.now() - batchStartedAt)} ms.`);
       for (const icao of batchIcaos) {
         for (const product of staleProductsByAirport.get(icao)) {
           const raw = typeof result.reports[icao]?.[product] === 'string' ? result.reports[icao][product].trim() : '';
@@ -2621,6 +2638,7 @@ function refreshAll(options = {}) {
 }
 
 async function runRefreshAll(options = {}) {
+  const refreshStartedAt = performance.now();
   const nswcRefresh = refreshNswc();
   const awosRefresh = refreshOwnedAwos();
   const activeAirports = state.nearbyMode ? [] : airportsInActiveGroup();
@@ -2671,6 +2689,7 @@ async function runRefreshAll(options = {}) {
 
   renderCards();
   const nswcUpdated = await nswcRefresh;
+  logInfo(`Refresh klar på ${Math.round(performance.now() - refreshStartedAt)} ms. NOTAM-fel: ${notamFailures}, AWOS-fel: ${awosFailures || 0}, NSWC: ${nswcUpdated === false ? 'misslyckades' : 'ok'}.`);
   if (!options.quiet) {
     const failures = [];
     if (notamFailures) failures.push(`NOTAM refresh failed for ${notamFailures} airport${notamFailures === 1 ? '' : 's'}; saved data was kept`);
