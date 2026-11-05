@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#101820">
+  <meta name="theme-color" content="#0d1117">
   <meta name="description" content="Personal aviation weather briefing with METAR and TAF for each airport.">
   <title>Aviation Briefing</title>
   <link rel="manifest" href="manifest.json">
@@ -36,14 +36,6 @@
         <a class="brand" href="." aria-label="Aviation Briefing home">
           <span class="brand-mark">✈</span><span><strong>AVIATION</strong><small>WEATHER BRIEFING</small></span><span class="app-version" id="app-version">v—</span>
         </a>
-        <div class="search-wrap">
-          <form id="airport-search" class="search-box" role="search">
-            <label class="search-code-label" for="airport-input">ICAO</label>
-            <input id="airport-input" type="search" maxlength="4" autocomplete="off" spellcheck="false" placeholder="Airport code, e.g. ESSA" aria-label="Search airport by ICAO code">
-            <kbd>↵</kbd>
-          </form>
-          <span class="search-help">Enter a four-letter ICAO airport code</span>
-        </div>
         <div class="topbar-actions">
           <button class="sidebar-tab" id="open-sidebar" aria-label="Open groups" aria-expanded="false">
             <span class="tab-icon">▤</span><span>Groups</span><span class="tab-count" id="group-count">0</span>
@@ -57,10 +49,21 @@
       </header>
 
       <section class="flight-times" aria-label="Flight times">
-        <span class="flight-times-title">WEATHER FOR FLIGHT WINDOW</span>
-        <label>DEP <input id="dep-time" type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" autocomplete="off" aria-label="Departure time UTC"></label>
-        <label>ARR <input id="arr-time" type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" autocomplete="off" aria-label="Arrival time UTC"></label>
-        <button class="button clear-times" id="clear-times" type="button" aria-label="Clear DEP and ARR times" title="Clear both times">× Clear</button>
+        <div class="flight-window-controls">
+          <div class="search-wrap">
+            <form id="airport-search" class="search-box" role="search">
+              <label class="search-code-label" for="airport-input">ICAO</label>
+              <input id="airport-input" type="search" maxlength="4" autocomplete="off" spellcheck="false" placeholder="Airport code, e.g. ESSA" aria-label="Search airport by ICAO code">
+              <kbd>↵</kbd>
+            </form>
+            <span class="search-help">Enter a four-letter ICAO airport code</span>
+          </div>
+          <div class="flight-time-controls">
+            <label class="departure-time-field">DEP <input id="dep-time" type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" autocomplete="off" aria-label="Departure time UTC"></label>
+            <label class="arrival-time-field">ARR <input id="arr-time" type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" autocomplete="off" aria-label="Arrival time UTC"></label>
+            <button class="button clear-times" id="clear-times" type="button" aria-label="Clear DEP and ARR times" title="Clear both times">× Clear</button>
+          </div>
+        </div>
         <span class="flight-times-note" id="flight-time-note">TAF is assessed for the selected arrival time, otherwise departure time or now.</span>
       </section>
 
