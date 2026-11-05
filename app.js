@@ -871,9 +871,8 @@ function escapeHtml(value) {
 function formatWeatherMarkup(raw, product = 'metar', airport = null) {
   let html = escapeHtml(raw);
   if (product === 'taf') {
-    html = html.replace(/(^|\s)(PROB(?:30|40)|BECMG|TEMPO|FM\d{6})(?=\s|$)/g, '<br>$2');
-    html = html.replace(/^<br>/, '');
-  }
+    html = html.replace(/(^|\s)(PROB(?:30|40)|BECMG|TEMPO|FM\d{6})(?=\s|$)/g,     '<br>$2');
+      }
   html = html.replace(/\b(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?KT\b/g, (match, direction, speed, gust) =>
     formatCrosswindWind(match, direction, speed, gust || speed, airport));
   const visibilityColor = value => product === 'metar'
