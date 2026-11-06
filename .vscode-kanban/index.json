@@ -1,0 +1,24 @@
+{
+  "columns": [
+    {
+      "id": "todo",
+      "title": "TODO"
+    },
+    {
+      "id": "doing",
+      "title": "Doing"
+    },
+    {
+      "id": "done",
+      "title": "Done"
+    }
+  ],
+  "order": {
+    "todo": [],
+    "doing": [
+      "mw4sialklhlj"
+    ],
+    "done": []
+  },
+  "labels": []
+}
