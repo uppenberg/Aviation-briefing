@@ -36,6 +36,7 @@
         <a class="brand" href="." aria-label="Aviation Briefing home">
           <span class="brand-mark">✈</span><span><strong>AVIATION</strong><small>WEATHER BRIEFING</small></span><span class="app-version" id="app-version">v—</span>
         </a>
+        <button class="icon-button settings-button" id="open-settings" type="button" aria-label="Open settings" title="Settings">⚙</button>
         <div class="topbar-actions">
           <button class="sidebar-tab" id="open-sidebar" aria-label="Open groups" aria-expanded="false">
             <span class="tab-icon">▤</span><span>Groups</span><span class="tab-count" id="group-count">0</span>
@@ -44,7 +45,6 @@
           <button class="button nearby-button" id="nearby-taf" type="button" title="Find possible alternates within 100 NM"><span id="nearby-icon" aria-hidden="true">⌖</span><span class="button-label-full" id="nearby-label-full">Nearby Possible Alternates</span><span class="button-label-short" id="nearby-label-short">Nearby</span></button>
           <button class="button refresh-all" id="refresh-all"><span aria-hidden="true">↻</span> <span class="button-label-full">Refresh all</span><span class="button-label-short">Refresh</span></button>
           <button class="button nswc-button" id="open-nswc" type="button" title="Open the latest NSWC chart">NSWC</button>
-          <button class="button settings-button" id="open-settings" type="button" aria-label="Open settings" title="Settings"><span aria-hidden="true">⚙</span> <span class="button-label-full">Settings</span><span class="button-label-short">Settings</span></button>
         </div>
       </header>
 
@@ -131,6 +131,10 @@
           <legend>Nearby possible alternates</legend>
           <label class="settings-field" for="nearby-radius">Search radius <span><input id="nearby-radius" type="text" inputmode="numeric" pattern="[0-9]*" required> NM</span></label>
           <p class="settings-help">Nearby shows airports within this distance whose TAF meets your planning minima for the selected window, or the selected time.</p>
+        </fieldset>
+        <fieldset class="settings-section backup-section">
+          <legend>Tools</legend>
+          <a class="button" href="https://uppenberg.github.io/Beechcraft-Performance-EFB/" target="_blank" rel="noopener noreferrer">Open Performance tool</a>
         </fieldset>
         <fieldset class="settings-section backup-section">
           <legend>Presets</legend>
