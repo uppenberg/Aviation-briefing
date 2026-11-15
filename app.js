@@ -1489,12 +1489,12 @@ function renderCard(airport, nearby = false) {
       <div class="card-actions">${cardActions}</div>
     </header>
     <section class="weather-block">
-      ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw, 'metar', airport) : escapeHtml(metarText), metar.error ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null, metarExpired ? '<span class="taf-expired" title="METAR is older than 35 minutes">[EXPIRED]</span>' : '')}
+      ${renderWeatherToggle(airport.icao, 'metar', 'METAR', metar.time, metar.raw ? formatWeatherMarkup(metar.raw, 'metar', airport) : escapeHtml(metarText), metar.error || metar.refreshError ? 'error' : metar.raw ? '' : 'placeholder', metar.raw ? getWeatherConditionColors(metar.raw, 'metar') : null, metar.refreshError || metar.error ? `<span class="taf-expired" title="${escapeHtml(metar.refreshError || metar.error)}">[ERROR]</span>` : metarExpired ? '<span class="taf-expired" title="METAR is older than 50 minutes">[EXPIRED]</span>' : '')}
       ${renderWeatherRunwayPanel(airport, 'metar')}
       ${renderMetarHistoryPanel(airport)}
     </section>
     <section class="weather-block taf-block">
-      ${renderWeatherToggle(airport.icao, 'taf', 'TAF', taf.time, taf.raw ? formatTafForFlightWindow(taf.raw, airport) : escapeHtml(tafText), taf.error ? 'error' : taf.raw ? '' : 'placeholder', taf.raw ? getWeatherConditionColors(taf.raw, 'taf') : null, tafExpired ? '<span class="taf-expired" title="TAF validity period has ended">[EXPIRED]</span>' : '')}
+      ${renderWeatherToggle(airport.icao, 'taf', 'TAF', taf.time, taf.raw ? formatTafForFlightWindow(taf.raw, airport) : escapeHtml(tafText), taf.error || taf.refreshError ? 'error' : taf.raw ? '' : 'placeholder', taf.raw ? getWeatherConditionColors(taf.raw, 'taf') : null, taf.refreshError || taf.error ? `<span class="taf-expired" title="${escapeHtml(taf.refreshError || taf.error)}">[ERROR]</span>` : tafExpired ? '<span class="taf-expired" title="TAF validity period has ended">[EXPIRED]</span>' : '')}
       ${renderWeatherRunwayPanel(airport, 'taf')}
       ${renderAlternateAssessment(airport)}
     </section>
@@ -1656,9 +1656,14 @@ async function refreshAirport(icao, options = {}) {
         airport[product] = { ...result.value, retrievedAt: Date.now() };
         return true;
       }
+      const errorMessage = result.reason?.message || 'unknown error';
+      if (isCachedReport(current)) {
+        if (result.status === 'rejected') current.refreshError = errorMessage;
+        else delete current.refreshError;
+      }
       if (!isCachedReport(current)) {
         airport[product] = result.status === 'rejected'
-          ? { error: `Could not fetch ${product.toUpperCase()}: ${result.reason?.message || 'unknown error'}` }
+          ? { error: `Could not fetch ${product.toUpperCase()}: ${errorMessage}` }
           : { error: `No ${product.toUpperCase()} available.` };
       }
       return false;
