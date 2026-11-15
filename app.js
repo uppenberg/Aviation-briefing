@@ -2637,10 +2637,15 @@ function resolveTafFmDate(validityStart, validityEnd, day, hour, minute = 0) {
 function refreshAll(options = {}) {
   if (refreshAllRequest) return refreshAllRequest;
   const button = document.getElementById('refresh-all');
+  const settingsButton = document.getElementById('open-settings');
   button.disabled = true;
+  settingsButton.classList.add('refreshing');
+  settingsButton.setAttribute('aria-busy', 'true');
   refreshAllRequest = runRefreshAll(options).finally(() => {
     refreshAllRequest = null;
     button.disabled = false;
+    settingsButton.classList.remove('refreshing');
+    settingsButton.removeAttribute('aria-busy');
   });
   return refreshAllRequest;
 }

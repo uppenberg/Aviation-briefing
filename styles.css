@@ -165,7 +165,10 @@ h1 { margin-bottom: 5px; font: 600 clamp(26px, 4vw, 34px) var(--display); letter
 .group-membership-option { display: flex; align-items: center; gap: 7px; min-height: 26px; color: #c9d1d9; font-size: 10px; cursor: pointer; }
 .group-membership-option input { accent-color: #67cbb1; }
 .icon-button { width: 29px; height: 29px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #8b949e; cursor: pointer; font-size: 17px; }
-.topbar .settings-button { width: 44px; height: 44px; font-size: 20px; }
+.topbar .settings-button { position: relative; width: 44px; height: 44px; font-size: 20px; }
+.topbar .settings-button.refreshing::after { content: ""; position: absolute; inset: -4px; border: 2px solid transparent; border-top-color: var(--accent); border-right-color: var(--accent); border-radius: 50%; pointer-events: none; animation: settings-refresh-spin .8s linear infinite; }
+@keyframes settings-refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .topbar .settings-button.refreshing::after { animation: none; } }
 .weather-block { padding: 13px 15px 15px; }
 .weather-block + .weather-block { border-top: 1px solid #263640; }
 .weather-summary-wrap { min-width: 0; }
