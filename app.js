@@ -879,7 +879,7 @@ function formatWeatherMarkup(raw, product = 'metar', airport = null) {
     ? value < 400 ? '#ff55dc' : value <= 549 ? '#ff6969' : value <= 800 ? '#ffae5c' : value <= 1400 ? '#e6ca62' : '#70dfa3'
     : value < 550 ? '#ff55dc' : value < 1400 ? '#ff6969' : value < 2300 ? '#ffae5c' : '#70dfa3';
   html = html.replace(/R\d{2}[LCR]?\/[PM]?(\d{3,4})/g, (match, value) => `<span style="color:${visibilityColor(Number(value))};font-weight:700">${match}</span>`);
-  html = html.replace(/\b(OVC|BKN)(\d{3})(CB)?\b/g, (match, type, value, convective = '') => {
+  html = html.replace(/\b(OVC|BKN|VV)(\d{3})(CB)?\b/g, (match, type, value, convective = '') => {
     const hundredsOfFeet = Number(value);
     const color = product === 'metar'
       ? hundredsOfFeet < 2 ? '#ff6969'
@@ -1472,7 +1472,7 @@ function renderCard(airport, nearby = false) {
   const notamActions = notams?.allNotams.length
     ? `${renderNotamButton(airport.icao, 'notam', `NOTAM ${notams.allNotams.length}`)}${notams.filteredNotams.length ? renderNotamButton(airport.icao, 'hours', `OP HRS ${notams.filteredNotams.length}`) : ''}`
     : '';
-  const alternateTooltip = 'Possible alternate criteria: TAF covers the full assessment window; visibility ≥ 1,400 m; BKN/OVC ceiling > 399 ft; no TS. Window: DEP–ARR if set, otherwise the next 3 hours.';
+  const alternateTooltip = 'Possible alternate criteria: TAF covers the full assessment window; visibility ≥ 1,400 m; BKN/OVC/VV ceiling > 399 ft; no TS. Window: DEP–ARR if set, otherwise the next 3 hours.';
   const alternateBadge = nearby || isPossibleAlternate(airport)
     ? ` <button class="alternate-badge" type="button" data-tooltip="${alternateTooltip}" title="${alternateTooltip}" aria-label="${alternateTooltip}">POSSIBLE ALT</button>`
     : '';
@@ -2025,7 +2025,7 @@ function assessPossibleAlternate(raw, window) {
   if (rvr.some(match => Number(match[2]) <= 550 || match[1] === 'M')) reasons.push('RVR ≤ 550 m');
   const vis = [...text.matchAll(/(?:^|\s)(\d{4})(?=\s|$)/g)].map(match => Number(match[1]));
   if (vis.some(value => value < 1400)) reasons.push('visibility below 1,400 m');
-  if ([...text.matchAll(/\b(?:BKN|OVC)(\d{3})/g)].some(match => Number(match[1]) <= 3)) reasons.push('BKN/OVC ceiling ≤ 300 ft');
+  if ([...text.matchAll(/\b(?:BKN|OVC|VV)(\d{3})/g)].some(match => Number(match[1]) <= 3)) reasons.push('BKN/OVC/VV ceiling ≤ 300 ft');
   if (/\bTS\b/.test(text)) reasons.push('thunderstorm (TS)');
   return { possible: reasons.length === 0, reasons: reasons.length ? [...new Set(reasons)] : ['—'] };
 }
