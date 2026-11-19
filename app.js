@@ -1628,54 +1628,61 @@ function getWeatherConditionColors(raw, product) {
   };
 }
 
+async function refreshAirportWeather(icao, options = {}) {
+  const getWeather = product => {
+    const batchReport = options.weatherReports?.[product];
+    if (batchReport?.error) return Promise.reject(batchReport.error);
+    if (batchReport) return Promise.resolve(batchReport);
+    return fetchFreshWeather(icao, product, state.airports.find(item => item.icao === icao));
+  };
+  const weatherPromise = Promise.allSettled([
+    getWeather('metar'),
+    getWeather('taf')
+  ]);
+  const [metarResult, tafResult] = await weatherPromise;
+  const airport = state.airports.find(item => item.icao === icao);
+  if (!airport) return;
+  const updateReport = (product, result) => {
+    const current = airport[product];
+    if (result.status === 'fulfilled' && isCachedReport(result.value)) {
+      airport[product] = { ...result.value, retrievedAt: Date.now() };
+      return true;
+    }
+    const errorMessage = result.reason?.message || 'unknown error';
+    if (isCachedReport(current)) {
+      if (result.status === 'rejected') current.refreshError = errorMessage;
+      else delete current.refreshError;
+    }
+    if (!isCachedReport(current)) {
+      airport[product] = result.status === 'rejected'
+        ? { error: `Could not fetch ${product.toUpperCase()}: ${errorMessage}` }
+        : { error: `No ${product.toUpperCase()} available.` };
+    }
+    return false;
+  };
+  const metarUpdated = updateReport('metar', metarResult);
+  const tafUpdated = updateReport('taf', tafResult);
+  if (metarUpdated || tafUpdated) {
+    saveState();
+    renderLastSuccessfulUpdate();
+  }
+  if (options.renderWeatherFinish ?? (options.renderFinish !== false)) renderCards();
+
+  if ([metarResult, tafResult].some(result => result.status === 'rejected')) showStatus(`Could not fetch weather data for ${icao}.`, true);
+}
+
 async function refreshAirport(icao, options = {}) {
   if (state.busy.has(icao)) return { notamFailed: false };
   state.busy.add(icao);
   if (options.renderStart !== false) renderCards();
   try {
-    const getWeather = product => {
-      const batchReport = options.weatherReports?.[product];
-      if (batchReport?.error) return Promise.reject(batchReport.error);
-      if (batchReport) return Promise.resolve(batchReport);
-      return fetchFreshWeather(icao, product, state.airports.find(item => item.icao === icao));
-    };
-    const weatherPromise = Promise.allSettled([
-      getWeather('metar'),
-      getWeather('taf')
-    ]);
     const auxiliaryPromise = Promise.allSettled([
       options.skipNotams ? Promise.resolve(null) : fetchFreshNotams(icao, state.airports.find(item => item.icao === icao)),
       options.skipRunways ? Promise.resolve([null, null]) : Promise.allSettled([fetchOurAirportsRunways(icao), fetchOurAirportsVariation(icao)])
     ]);
-    const [metarResult, tafResult] = await weatherPromise;
+    if (!options.weatherApplied) await refreshAirportWeather(icao, options);
     const airport = state.airports.find(item => item.icao === icao);
     if (!airport) return { notamFailed: false };
-    const updateReport = (product, result) => {
-      const current = airport[product];
-      if (result.status === 'fulfilled' && isCachedReport(result.value)) {
-        airport[product] = { ...result.value, retrievedAt: Date.now() };
-        return true;
-      }
-      const errorMessage = result.reason?.message || 'unknown error';
-      if (isCachedReport(current)) {
-        if (result.status === 'rejected') current.refreshError = errorMessage;
-        else delete current.refreshError;
-      }
-      if (!isCachedReport(current)) {
-        airport[product] = result.status === 'rejected'
-          ? { error: `Could not fetch ${product.toUpperCase()}: ${errorMessage}` }
-          : { error: `No ${product.toUpperCase()} available.` };
-      }
-      return false;
-    };
-    const metarUpdated = updateReport('metar', metarResult);
-    const tafUpdated = updateReport('taf', tafResult);
-    if (metarUpdated || tafUpdated) {
-      saveState();
-      renderLastSuccessfulUpdate();
-    }
-    if (options.renderWeatherFinish ?? (options.renderFinish !== false)) renderCards();
-
     const [notamResult, runwayResult] = await auxiliaryPromise;
     if (notamResult.status === 'fulfilled' && notamResult.value) {
       airport.notams = notamResult.value;
@@ -1686,9 +1693,7 @@ async function refreshAirport(icao, options = {}) {
     airport.runways = runwayData?.status === 'fulfilled' ? runwayData.value : [];
     airport.magneticVariation = variationData?.status === 'fulfilled' ? variationData.value : null;
     airport.runwayError = runwayData?.status === 'rejected' ? 'Could not load runway headings from OurAirports.' : '';
-    const failed = [metarResult, tafResult].some(result => result.status === 'rejected');
     const notamFailed = notamResult.status === 'rejected';
-    if (failed) showStatus(`Could not fetch weather data for ${icao}.`, true);
     if (notamFailed && !options.quiet) showStatus(`Could not refresh NOTAMs for ${icao}; saved NOTAMs are unchanged.`, true);
     return { notamFailed };
   } catch (error) {
@@ -2231,7 +2236,9 @@ function enqueueWeatherRequest(url) {
       const delay = Math.max(0, WEATHER_REQUEST_INTERVAL_MS - (Date.now() - lastWeatherRequestAt));
       if (delay) await new Promise(resolve => setTimeout(resolve, delay));
       lastWeatherRequestAt = Date.now();
-      const response = await fetch(url.toString());
+      // The weather-age check already decides when cached reports are usable.
+      // Once a request is needed, do not reuse a browser HTTP-cache response.
+      const response = await fetch(url.toString(), { cache: 'no-store' });
       const body = (await response.text()).trim();
       if (response.status === 429 && attempt < WEATHER_RATE_LIMIT_RETRIES) {
         console.warn(`[Briefing] Worker svarade 429 (för många anrop). Försöker igen om ${2 * (2 ** attempt)} s (försök ${attempt + 1}/${WEATHER_RATE_LIMIT_RETRIES}).`);
@@ -2680,8 +2687,8 @@ async function runRefreshAll(options = {}) {
   if (activeAirports.length) {
     notamFailures += await refreshAirportBatch(activeAirports, {
       quiet: true,
-      render: false,
-      renderWeather: true,
+      // Show completed NOTAM/runway data before waiting for background tabs and AWOS.
+      render: true,
       builtIn: Boolean(state.activeGroup && isBuiltinGroup(state.activeGroup)),
       skipNotams: false
     });
@@ -2720,6 +2727,12 @@ async function refreshAirportBatch(airports, options = {}) {
   const uniqueAirports = [...new Map(airports.map(airport => [airport.icao, airport])).values()];
   if (!uniqueAirports.length) return;
   const weatherReports = await fetchFreshWeatherBatch(uniqueAirports);
+  // Apply every weather report before the limited auxiliary workers can block on NOTAMs.
+  await Promise.all(uniqueAirports.map(airport => refreshAirportWeather(airport.icao, {
+    weatherReports: weatherReports.get(airport.icao),
+    renderWeatherFinish: false
+  })));
+  renderCards();
   let next = 0;
   let notamFailures = 0;
   const workers = Array.from({ length: Math.min(6, uniqueAirports.length) }, async () => {
@@ -2730,10 +2743,9 @@ async function refreshAirportBatch(airports, options = {}) {
         quiet: true,
         renderStart: false,
         renderFinish: false,
-        renderWeatherFinish: options.renderWeather === true,
+        weatherApplied: true,
         skipNotams: options.skipNotams ?? builtIn,
-        skipRunways: options.skipRunways ?? builtIn,
-        weatherReports: weatherReports.get(airport.icao)
+        skipRunways: options.skipRunways ?? builtIn
       });
       if (result?.notamFailed) notamFailures += 1;
     }
